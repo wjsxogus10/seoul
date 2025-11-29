@@ -70,7 +70,7 @@ def load_and_merge_data():
     # 3. 버스정류장 밀도
     try:
         from shapely.geometry import Point
-        df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
+        df_bus = pd.read_excel('./data/GGD_StationInfo_M.OLD').dropna(subset=['X', 'Y'])
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
         gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5179").to_crs(epsg=4326) # CRS 변환
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
@@ -259,3 +259,4 @@ if valid_metrics:
     
     csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
+
