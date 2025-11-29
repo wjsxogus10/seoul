@@ -80,7 +80,7 @@ def load_and_merge_data():
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
         # 버스 좌표계 변환 (5181 -> 4326)
-        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181").to_crs(epsg=4326)
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181").to_crs(epsg=5179)
         joined = geopandas.sjoin(gdf_bus, gdf[['자치구명', 'geometry']], how="inner", predicate="within")
         cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
@@ -177,3 +177,4 @@ if valid_metrics:
     st.sidebar.markdown("---")
     display_count = st.sidebar.slider("📊 그래프/표 표시 개수", 5, 25, 10)
     st.sidebar.markdown
+
