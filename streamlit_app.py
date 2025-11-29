@@ -5,103 +5,101 @@ import plotly.express as px
 import os
 from shapely.geometry import Point
 
-# --------------------------------------------------------------------------
-# 1. 기본 설정
-# --------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보드")
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 
-# --------------------------------------------------------------------------
-# 2. 데이터 로드 및 병합
-# --------------------------------------------------------------------------
 @st.cache_data
 def load_and_merge_data():
     # -----------------------------------------------------------
-    # (A) 지도 데이터 (인터넷 공공 데이터)
+    # (A) 지도 데이터
     # -----------------------------------------------------------
     map_url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     try:
         gdf = geopandas.read_file(map_url)
         gdf = gdf.to_crs(epsg=4326)
-        
-        # 컬럼 통일
         col_map = {'name': '자치구명', 'SIG_KOR_NM': '자치구명'}
         gdf = gdf.rename(columns=col_map)
-        
-        # 면적 계산
         gdf_area = gdf.to_crs(epsg=5179)
         gdf['면적(km²)'] = gdf_area.geometry.area / 1_000_000
-    except Exception as e:
-        st.error(f"지도 로드 실패: {e}")
+    except:
         return None
 
     # -----------------------------------------------------------
     # (B) 사용자 데이터 병합
     # -----------------------------------------------------------
     
-    # 1. 인구 데이터
-    pop_file = './data/서울시 상권분석서비스(상주인구-자치구).csv'
-    if os.path.exists(pop_file):
-        try:
-            df_pop = pd.read_csv(pop_file, encoding='cp949')
-            df_grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index()
-            df_grp.rename(columns={'자치구_코드_명': '자치구명'}, inplace=True)
-            gdf = gdf.merge(df_grp, on='자치구명', how='left')
-            gdf['인구_밀도(명/km²)'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
-        except: pass
+    # 1. 인구
+    try:
+        df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
+        df_grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index()
+        df_grp.rename(columns={'자치구_코드_명': '자치구명'}, inplace=True)
+        gdf = gdf.merge(df_grp, on='자치구명', how='left')
+        gdf['인구_밀도(명/km²)'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
+    except: pass
 
-    # 2. 상권 데이터
-    biz_file = './data/서울시 상권분석서비스(집객시설-자치구).csv'
-    if os.path.exists(biz_file):
-        try:
-            df_biz = pd.read_csv(biz_file, encoding='cp949')
-            df_grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index()
-            df_grp.rename(columns={'자치구_코드_명': '자치구명'}, inplace=True)
-            gdf = gdf.merge(df_grp, on='자치구명', how='left')
-        except: pass
+    # 2. 상권
+    try:
+        df_biz = pd.read_csv('./data/서울시 상권분석서비스(집객시설-자치구).csv', encoding='cp949')
+        df_grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index()
+        df_grp.rename(columns={'자치구_코드_명': '자치구명'}, inplace=True)
+        gdf = gdf.merge(df_grp, on='자치구명', how='left')
+    except: pass
 
-    # 3. 버스 정류장 데이터
-    bus_file = './data/GGD_StationInfo_M.xlsx'
-    if os.path.exists(bus_file):
-        try:
-            df = pd.read_excel(bus_file)
-            df = df.dropna(subset=['X', 'Y'])
-            geom = [Point(xy) for xy in zip(df['X'], df['Y'])]
-            gdf_bus = geopandas.GeoDataFrame(df, geometry=geom, crs="EPSG:4326")
-            joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
-            cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
-            gdf = gdf.merge(cnt, on='자치구명', how='left')
-            gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
-            gdf['버스정류장_밀도(개/km²)'] = gdf['버스정류장_수'] / gdf['면적(km²)']
-        except: pass
+    # 3. 버스
+    try:
+        df = pd.read_excel('./data/GGD_StationInfo_M.xlsx')
+        df = df.dropna(subset=['X', 'Y'])
+        geom = [Point(xy) for xy in zip(df['X'], df['Y'])]
+        gdf_bus = geopandas.GeoDataFrame(df, geometry=geom, crs="EPSG:4326")
+        joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
+        cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
+        gdf = gdf.merge(cnt, on='자치구명', how='left')
+        gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
+        gdf['버스정류장_밀도(개/km²)'] = gdf['버스정류장_수'] / gdf['면적(km²)']
+    except: pass
 
     # -----------------------------------------------------------
-    # (C) [수정됨] 지하철 데이터 (업로드한 파일명 정확히 지정)
+    # (C) [강력 수정] 지하철 데이터 디버깅 로직
     # -----------------------------------------------------------
-    # 파일명이 '지하철'이 들어간 csv를 찾거나, 특정 파일명을 지정
-    subway_file_name = '지하철 위경도.xlsx - 시트1.csv'
-    subway_path = f'./data/{subway_file_name}'
-    
-    # 만약 정확한 이름이 없으면 폴더 내 검색
-    if not os.path.exists(subway_path):
-        candidates = [f for f in os.listdir('./data') if '지하철' in f and f.endswith('.csv')]
+    subway_path = None
+    # 1. 사용자가 올린 정확한 파일명 찾기
+    specific_file = '지하철 위경도.xlsx - 시트1.csv'
+    if os.path.exists(f'./data/{specific_file}'):
+        subway_path = f'./data/{specific_file}'
+    else:
+        # 2. 없으면 폴더 내 csv 중 '지하철' 들어간 거 아무거나 잡기
+        candidates = [f for f in os.listdir('./data') if f.endswith('.csv') and ('지하철' in f or 'subway' in f)]
         if candidates:
             subway_path = f'./data/{candidates[0]}'
 
-    if os.path.exists(subway_path):
+    if subway_path:
         try:
-            # 인코딩 시도 (utf-8 아니면 cp949)
+            # 인코딩 자동 감지 시도
             try:
                 df_sub = pd.read_csv(subway_path, encoding='utf-8')
             except:
                 df_sub = pd.read_csv(subway_path, encoding='cp949')
-            
-            # 컬럼명 찾기 ('위도', '경도'가 포함된 컬럼 자동 찾기)
-            lat_col = next((c for c in df_sub.columns if '위도' in c or 'lat' in c.lower()), None)
-            lon_col = next((c for c in df_sub.columns if '경도' in c or 'lon' in c.lower()), None)
+
+            # --- [디버깅] 컬럼 확인용 ---
+            st.sidebar.markdown("---")
+            st.sidebar.warning(f"📂 읽은 지하철 파일: {os.path.basename(subway_path)}")
+            st.sidebar.write("파일 안의 컬럼들:", df_sub.columns.tolist())
+
+            # 컬럼명 정리 (공백 제거, 소문자 변환 없이 원본 비교하되, 유연하게 찾기)
+            # 위도 찾기
+            lat_col = next((c for c in df_sub.columns if any(k in c for k in ['위도', 'lat', 'Lat', 'Y', 'y'])), None)
+            # 경도 찾기
+            lon_col = next((c for c in df_sub.columns if any(k in c for k in ['경도', 'lon', 'Lon', 'X', 'x'])), None)
 
             if lat_col and lon_col:
+                st.sidebar.success(f"✅ 좌표 컬럼 찾음: {lat_col}, {lon_col}")
+                
                 df_sub = df_sub.dropna(subset=[lat_col, lon_col])
+                # 좌표가 문자로 되어있을 경우 숫자로 변환
+                df_sub[lat_col] = pd.to_numeric(df_sub[lat_col], errors='coerce')
+                df_sub[lon_col] = pd.to_numeric(df_sub[lon_col], errors='coerce')
+                df_sub = df_sub.dropna(subset=[lat_col, lon_col])
+
                 geom = [Point(xy) for xy in zip(df_sub[lon_col], df_sub[lat_col])]
                 gdf_sub = geopandas.GeoDataFrame(df_sub, geometry=geom, crs="EPSG:4326")
                 
@@ -111,29 +109,26 @@ def load_and_merge_data():
                 gdf = gdf.merge(cnt, on='자치구명', how='left')
                 gdf['지하철역_수'] = gdf['지하철역_수'].fillna(0)
                 gdf['지하철역_밀도(개/km²)'] = gdf['지하철역_수'] / gdf['면적(km²)']
-                
             else:
-                st.warning(f"지하철 파일에서 '위도', '경도' 컬럼을 찾을 수 없습니다. (발견된 컬럼: {list(df_sub.columns)})")
-                gdf['지하철역_수'] = 0
-                gdf['지하철역_밀도(개/km²)'] = 0
-
+                st.sidebar.error("❌ '위도/경도' 컬럼을 못 찾았습니다.")
         except Exception as e:
-            st.warning(f"지하철 데이터 로드 중 오류: {e}")
+            st.sidebar.error(f"지하철 파일 읽기 에러: {e}")
             gdf['지하철역_수'] = 0
             gdf['지하철역_밀도(개/km²)'] = 0
     else:
-        # 파일이 없을 때
+        st.sidebar.error("❌ 지하철 데이터 파일(.csv)이 data 폴더에 없습니다.")
         gdf['지하철역_수'] = 0
         gdf['지하철역_밀도(개/km²)'] = 0
-    
-    # 교통 부족 순위 계산 (버스 + 지하철)
-    if '버스정류장_수' in gdf.columns and '지하철역_수' in gdf.columns:
-        gdf['교통_부족_순위'] = (gdf['버스정류장_수'] + gdf['지하철역_수']).rank(ascending=True, method='min')
+
+    # 교통 부족 순위 업데이트
+    if '버스정류장_수' in gdf.columns:
+        sub_cnt = gdf['지하철역_수'] if '지하철역_수' in gdf.columns else 0
+        gdf['교통_부족_순위'] = (gdf['버스정류장_수'] + sub_cnt).rank(ascending=True, method='min')
 
     return gdf
 
 # --------------------------------------------------------------------------
-# 3. 화면 구성
+# 3. 화면 표시
 # --------------------------------------------------------------------------
 gdf = load_and_merge_data()
 
@@ -141,7 +136,7 @@ if gdf is not None:
     st.sidebar.header("🔍 분석 옵션")
     
     metrics = {
-        '지하철역 밀도': '지하철역_밀도(개/km²)', # <-- 1순위로 배치
+        '지하철역 밀도': '지하철역_밀도(개/km²)',
         '인구 밀도': '인구_밀도(명/km²)',
         '버스정류장 밀도': '버스정류장_밀도(개/km²)',
         '교통 부족 순위': '교통_부족_순위',
@@ -158,9 +153,8 @@ if gdf is not None:
         district_list = ['전체 서울시'] + sorted(gdf['자치구명'].unique().tolist())
         selected_district = st.sidebar.selectbox("자치구 상세", district_list)
 
-        # (1) 지도
+        # 지도
         st.subheader(f"🗺️ 서울시 {selected_name} 지도")
-        
         center_lat, center_lon, zoom = 37.5665, 126.9780, 9.5
         if selected_district != '전체 서울시':
             d = gdf[gdf['자치구명'] == selected_district]
@@ -173,31 +167,13 @@ if gdf is not None:
             center={"lat": center_lat, "lon": center_lon}, opacity=0.6,
             hover_name='자치구명', hover_data=[selected_col], color_continuous_scale='YlGnBu'
         )
-        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
-        # (2) 그래프
+        # 그래프
         st.subheader(f"📊 {selected_name} 순위")
-        sort_opt = st.radio("정렬:", ["상위 10개", "하위 10개", "전체"], horizontal=True)
         df_sorted = gdf.sort_values(by=selected_col, ascending=False)
-        
-        if sort_opt == "상위 10개": data = df_sorted.head(10)
-        elif sort_opt == "하위 10개": data = df_sorted.tail(10).sort_values(by=selected_col)
-        else: data = df_sorted
-        
-        data['color'] = data['자치구명'].apply(lambda x: 'red' if x == selected_district else 'blue')
-        fig_bar = px.bar(data, x='자치구명', y=selected_col, color='color', color_discrete_map={'red':'#FF4B4B', 'blue':'#8884d8'})
-        fig_bar.update_layout(showlegend=False)
+        fig_bar = px.bar(df_sorted, x='자치구명', y=selected_col)
         st.plotly_chart(fig_bar, use_container_width=True)
-
-        # (3) 표
-        st.markdown("---")
-        st.subheader("📋 전체 데이터 표")
-        cols = ['자치구명'] + list(valid_metrics.values())
-        st.dataframe(gdf[cols].sort_values(by=selected_col, ascending=False), use_container_width=True)
-        csv = gdf[cols].to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📥 데이터 다운로드", csv, "seoul_data.csv", "text/csv")
-    else:
-        st.warning("분석할 데이터 컬럼이 없습니다.")
-else:
-    st.error("지도를 로드할 수 없습니다.")
+        
+        # 표
+        st.dataframe(gdf[['자치구명'] + list(valid_metrics.values())].sort_values(by=selected_col, ascending=False))
