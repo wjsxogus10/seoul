@@ -23,7 +23,6 @@ def load_and_merge_data():
         gdf = geopandas.read_file(map_url)
         gdf = gdf.to_crs(epsg=4326)
         
-        # '자치구명' 컬럼 생성 및 안전장치
         if 'name' in gdf.columns:
             gdf['자치구명'] = gdf['name']
         elif 'SIG_KOR_NM' in gdf.columns:
@@ -68,12 +67,20 @@ def load_and_merge_data():
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
     except: pass
 
-    # 3. 버스정류장 밀도
+    # 3. 버스정류장 밀도 [!!! 최종 수정된 부분: CRS (좌표계) 변경 !!!]
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
+        
+        # [수정] X, Y 좌표를 Point 객체로 생성
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
-        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:4326")
+        
+        # [수정] GeoDataFrame 생성 시, 한국 표준 좌표계(EPSG:5179)로 가정하고 생성
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5179")
+        
+        # [수정] 공간 병합 전, GPS 좌표계(EPSG:4326)로 변환
+        gdf_bus = gdf_bus.to_crs(epsg=4326)
+
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
         cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
@@ -136,12 +143,10 @@ def load_and_merge_data():
 # --------------------------------------------------------------------------
 # 3. 화면 구성 및 시각화
 # --------------------------------------------------------------------------
-# --- 캐시 클리어 후 이 코드로 재부팅 ---
 result = load_and_merge_data()
 
 if result is None or result[0] is None:
-    st.error("❌ 데이터를 로드하지 못했습니다. (필수 GeoJSON 로드 실패 또는 캐시 잔여 문제)")
-    st.info("💡 해결 방법: 앱 삭제 후 다시 배포해주세요.")
+    st.error("데이터 로드 중 문제가 발생했습니다.")
     st.stop()
 
 gdf, df_stations = result
@@ -186,80 +191,4 @@ if valid_metrics:
 
     # =================================================================
     # [레이아웃] 지도와 그래프 병렬 배치
-    # =================================================================
-    col_map, col_chart = st.columns([1, 1])
-
-    # ----------------------------------------
-    # [왼쪽] 지도
-    # ----------------------------------------
-    with col_map:
-        st.subheader(f"🗺️ 서울시 {selected_name} 지도")
-        
-        center_lat, center_lon, zoom = 37.5665, 126.9780, 9.5
-        map_data = gdf.copy()
-
-        if selected_district != '전체 서울시':
-            map_data = gdf[gdf['자치구명'] == selected_district]
-            center_lat = map_data.geometry.centroid.y.values[0]
-            center_lon = map_data.geometry.centroid.x.values[0]
-            zoom = 11.0
-
-        fig = px.choropleth_mapbox(
-            map_data, 
-            geojson=map_data.geometry.__geo_interface__, 
-            locations=map_data.index,
-            color=selected_col, 
-            mapbox_style="carto-positron", 
-            zoom=zoom,
-            center={"lat": center_lat, "lon": center_lon}, 
-            opacity=0.7,
-            hover_name='자치구명', 
-            hover_data=[selected_col], 
-            color_continuous_scale=colorscale
-        )
-        
-        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ----------------------------------------
-    # [오른쪽] 막대 그래프
-    # ----------------------------------------
-    with col_chart:
-        st.subheader(f"📊 {selected_name} 순위 비교")
-        
-        sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
-        
-        if sort_opt == "상위":
-            df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
-        else:
-            df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
-            
-        df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
-        
-        fig_bar = px.bar(
-            df_sorted, x='자치구명', y=selected_col, 
-            text=selected_col, color='color', color_discrete_map='identity'
-        )
-        
-        fmt = '%{text:.0f}' if '순위' in selected_name or '인구' in selected_name else '%{text:.4f}'
-        fig_bar.update_traces(texttemplate=fmt, textposition='outside')
-        fig_bar.update_layout(
-            showlegend=False, 
-            xaxis_title=None, 
-            height=500,
-            margin={"r":0,"t":20,"l":0,"b":0}
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # ----------------------------------------
-    # [하단] 상세 데이터 표
-    # ----------------------------------------
-    st.markdown("---")
-    st.subheader("📋 상세 데이터 표")
-    cols_to_show = ['자치구명'] + list(valid_metrics.values())
-    
-    df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
-    
-    csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
+    # =
