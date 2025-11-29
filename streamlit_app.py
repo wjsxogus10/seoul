@@ -4,6 +4,7 @@ import geopandas
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import glob # 파일 검색을 위한 라이브러리 추가
 from shapely.geometry import Point
 
 # --------------------------------------------------------------------------
@@ -13,62 +14,70 @@ st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보�
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 
 # --------------------------------------------------------------------------
-# 2. 데이터 로드 및 병합 함수 (Final Robust Version)
+# 2. 데이터 로드 및 병합 함수 (Final Robust Version with Auto-Detection)
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner="데이터를 로드하고 분석을 진행합니다...")
 def load_and_merge_data():
-    
-    # --- 1. 지도 데이터 로드 (GeoJSON) ---
+    # (A) 지도 데이터
     map_url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     try:
         gdf = geopandas.read_file(map_url)
         gdf = gdf.to_crs(epsg=4326)
         
-        # '자치구명' 컬럼 생성 강제
         if 'name' in gdf.columns:
             gdf['자치구명'] = gdf['name']
         elif 'SIG_KOR_NM' in gdf.columns:
             gdf['자치구명'] = gdf['SIG_KOR_NM']
         else:
-            # Fatal error if we can't find the district name
-            return None, None 
+            st.error("❌ GeoJSON에 자치구 이름 컬럼이 없습니다.")
+            return None, None
             
         gdf['면적(km²)'] = gdf.geometry.to_crs(epsg=5179).area / 1_000_000
     except Exception as e:
-        return None, None # Crash if base map fails
+        st.error(f"❌ GeoJSON 로드 실패: {e}")
+        return None, None
 
-    # --- 2. 컬럼 초기화 (KeyError 방지) ---
+    # (B) 사용자 데이터 병합
+    
+    # 컬럼 초기화
     cols_to_init = ['총_상주인구_수', '인구 밀도', '집객시설 수', '버스정류장_수', '버스정류장 밀도', '지하철역_수', '지하철역 밀도', '총_교통수단_수', '대중교통 밀도']
     for c in cols_to_init:
         if c not in gdf.columns:
             gdf[c] = 0
-            
-    df_stations = pd.DataFrame()
-
-    # --- 3. 사용자 데이터 병합 (개별 Try/Except 블록) ---
     
-    # 상주 인구
-    try:
-        df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
-        grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
-        gdf = gdf.merge(grp, on='자치구명', how='left')
-        gdf['총_상주인구_수'] = gdf['총_상주인구_수'].fillna(0)
-        gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
-    except: pass
-
-    # 집객시설 수
-    try:
-        df_biz = pd.read_csv('./data/서울시 상권분석서비스(집객시설-자치구).csv', encoding='cp949')
-        biz_count_col = next((c for c in df_biz.columns if '집객시설' in c or '시설수' in c), None)
-        gu_col = next((c for c in df_biz.columns if '자치구' in c), None)
-        if biz_count_col and gu_col:
-            grp = df_biz.groupby(gu_col)[biz_count_col].mean().reset_index()
-            grp = grp.rename(columns={gu_col: '자치구명', biz_count_col: '집객시설 수'})
+    # 1. 상주 인구 (파일명 자동 탐지 - 상권+인구)
+    pop_file_pattern = './data/*상권분석서비스*상주인구*.csv'
+    pop_file = next(iter(glob.iglob(pop_file_pattern)), None)
+    
+    if pop_file:
+        try:
+            df_pop = pd.read_csv(pop_file, encoding='cp949')
+            grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
             gdf = gdf.merge(grp, on='자치구명', how='left')
-            gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
-    except: pass
+            gdf['총_상주인구_수'] = gdf['총_상주인구_수'].fillna(0)
+            gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
+        except: pass
 
-    # 버스정류장 밀도
+    # 2. 집객시설 수 (파일명 자동 탐지 - 상권+집객시설)
+    biz_file_pattern = './data/*상권분석서비스*집객시설*.csv'
+    biz_file = next(iter(glob.iglob(biz_file_pattern)), None)
+    
+    if biz_file:
+        try:
+            df_biz = pd.read_csv(biz_file, encoding='cp949')
+            # 컬럼 이름 찾기
+            biz_count_col = next((c for c in df_biz.columns if '집객시설' in c or '시설수' in c), None)
+            gu_col = next((c for c in df_biz.columns if '자치구' in c), None)
+
+            if biz_count_col and gu_col:
+                grp = df_biz.groupby(gu_col)[biz_count_col].mean().reset_index()
+                grp = grp.rename(columns={gu_col: '자치구명', biz_count_col: '집객시설 수'})
+                
+                gdf = gdf.merge(grp, on='자치구명', how='left')
+                gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
+        except: pass
+
+    # 3. 버스정류장 밀도 (파일명 고정)
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
@@ -80,11 +89,14 @@ def load_and_merge_data():
         gdf = gdf.merge(cnt, on='자치구명', how='left')
         gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
         gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
-    except: pass
+    except: 
+        gdf['버스정류장 밀도'] = 0
 
-    # 지하철 밀도
-    density_file = './data/지하철 밀도.CSV'
-    if os.path.exists(density_file):
+    # 4. [핵심 수정] 지하철 밀도 (파일 자동 탐지 - '지하철' + '밀도' 포함된 CSV)
+    subway_density_pattern = './data/*지하철*밀도*.csv'
+    density_file = next(iter(glob.iglob(subway_density_pattern)), None)
+    
+    if density_file:
         try:
             try: df_dens = pd.read_csv(density_file, encoding='utf-8')
             except: df_dens = pd.read_csv(density_file, encoding='cp949')
@@ -94,12 +106,33 @@ def load_and_merge_data():
             
             if gu_col and dens_col:
                 rename_map = {gu_col: '자치구명', dens_col: '지하철역 밀도'}
+                
+                # 병합
                 gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
         except: pass
+    else:
+        gdf['지하철역 밀도'] = 0
 
-    # --- 4. 최종 계산 ---
+    # 5. 지하철 위치 좌표 (점 찍기용 - 파일만 로드)
+    # 파일명 자동 탐지 - '지하철' + '위경도' 포함된 CSV
+    coord_pattern = './data/*지하철*위경도*.csv'
+    coord_file = next(iter(glob.iglob(coord_pattern)), None)
+    df_stations = pd.DataFrame()
+    
+    if coord_file:
+        try:
+            df_stations = pd.read_csv(coord_file, encoding='utf-8')
+            if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
+        except: pass
+
+    # 6. 대중교통 밀도 & 교통 부족 순위 계산
+    if '버스정류장 밀도' not in gdf.columns: gdf['버스정류장 밀도'] = 0
+    if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
+    if '총_상주인구_수' not in gdf.columns: gdf['총_상주인구_수'] = 0
+    
     gdf['총_교통수단_수'] = gdf['버스정류장_수'].fillna(0) + gdf['지하철역_수'].fillna(0)
+    
     gdf['대중교통 밀도'] = gdf['총_교통수단_수'] / gdf['면적(km²)']
     
     population_safe = gdf['총_상주인구_수'].replace(0, 1)
@@ -116,8 +149,8 @@ def load_and_merge_data():
 result = load_and_merge_data()
 
 if result is None or result[0] is None:
-    st.error("❌ 데이터를 로드하지 못했습니다. (필수 지도 또는 데이터 병합 실패)")
-    st.info("💡 해결 방법: 1. GitHub 'data' 폴더 내 파일명 확인. 2. Cloud Shell에서 'streamlit cache clear' 실행 후 재부팅.")
+    st.error("데이터 로드 중 문제가 발생했습니다.")
+    st.info("💡 파일 이름이 정확하지 않거나 캐시 오류일 수 있습니다. Cloud Shell에서 'streamlit cache clear' 후 재부팅해보세요.")
     st.stop()
 
 gdf, df_stations = result
