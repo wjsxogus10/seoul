@@ -186,4 +186,18 @@ if gdf is not None:
         else: data = df_sorted
         
         data['color'] = data['자치구명'].apply(lambda x: 'red' if x == selected_district else 'blue')
-        fig_bar = px.bar(data, x='자치구명', y=selected_col, color='color', color_
+        fig_bar = px.bar(data, x='자치구명', y=selected_col, color='color', color_discrete_map={'red':'#FF4B4B', 'blue':'#8884d8'})
+        fig_bar.update_layout(showlegend=False)
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # (3) 표
+        st.markdown("---")
+        st.subheader("📋 전체 데이터 표")
+        cols = ['자치구명'] + list(valid_metrics.values())
+        st.dataframe(gdf[cols].sort_values(by=selected_col, ascending=False), use_container_width=True)
+        csv = gdf[cols].to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 데이터 다운로드", csv, "seoul_data.csv", "text/csv")
+    else:
+        st.warning("분석할 데이터 컬럼이 없습니다.")
+else:
+    st.error("지도를 로드할 수 없습니다.")
