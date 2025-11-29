@@ -67,16 +67,15 @@ def load_and_merge_data():
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
     except: pass
 
-    # 3. 버스정류장 밀도 [!!! 수정된 부분: CRS (좌표계) 5186으로 변경 !!!]
+    # 3. 버스정류장 밀도 [!!! 최종 수정된 부분: CRS (좌표계) 5181로 변경 !!!]
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
         
-        # X, Y 좌표를 Point 객체로 생성
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
         
-        # [수정] GeoDataFrame 생성 시, EPSG:5186으로 가정하고 생성
-        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5186")
+        # [수정] GeoDataFrame 생성 시, EPSG:5181(중부원점)로 가정하고 생성
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181")
         
         # GPS 좌표계(EPSG:4326)로 변환
         gdf_bus = gdf_bus.to_crs(epsg=4326)
@@ -106,6 +105,8 @@ def load_and_merge_data():
                 
                 gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+            else:
+                gdf['지하철역 밀도'] = 0
         except: 
             gdf['지하철역 밀도'] = 0
     else:
