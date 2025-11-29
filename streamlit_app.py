@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import os
 
 # --------------------------------------------------------------------------
-# 1. 페이지 기본 설정 (레이아웃 wide 필수)
+# 1. 페이지 기본 설정 (레이아웃 wide)
 # --------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보드")
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
@@ -66,34 +66,44 @@ def load_and_merge_data():
     except: 
         gdf['버스정류장 밀도'] = 0
 
-    # 4. 지하철 밀도
-    density_file = './data/지하철 밀도.xlsx - Sheet1.csv'
-    if os.path.exists(density_file):
-        try:
-            try: df_dens = pd.read_csv(density_file, encoding='utf-8')
-            except: df_dens = pd.read_csv(density_file, encoding='cp949')
-            
-            gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
-            dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
-            
-            if gu_col and dens_col:
-                df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
-                cols_to_merge = ['자치구명', '지하철역 밀도']
-                cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
-                if cnt_col:
-                    df_dens = df_dens.rename(columns={cnt_col: '지하철역_수'})
-                    cols_to_merge.append('지하철역_수')
+    # 4. 지하철 밀도 (자동 탐지)
+    density_candidates = [
+        'seoul_subway_density.xlsx - Sheet1.csv',
+        '지하철 밀도.xlsx - Sheet1.csv',
+        '지하철 밀도.csv'
+    ]
+    
+    file_found = False
+    for f in density_candidates:
+        f_path = f'./data/{f}'
+        if os.path.exists(f_path):
+            try:
+                try: df_dens = pd.read_csv(f_path, encoding='utf-8')
+                except: df_dens = pd.read_csv(f_path, encoding='cp949')
+                
+                gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
+                dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
+                
+                if gu_col and dens_col:
+                    df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
+                    cols_to_merge = ['자치구명', '지하철역 밀도']
+                    
+                    cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
+                    if cnt_col:
+                        df_dens = df_dens.rename(columns={cnt_col: '지하철역_수'})
+                        cols_to_merge.append('지하철역_수')
 
-                gdf = gdf.merge(df_dens[cols_to_merge], on='자치구명', how='left')
-                gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
-            else:
-                gdf['지하철역 밀도'] = 0
-        except: gdf['지하철역 밀도'] = 0
-    else:
+                    gdf = gdf.merge(df_dens[cols_to_merge], on='자치구명', how='left')
+                    gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+                    file_found = True
+                    break 
+            except: pass
+            
+    if not file_found:
         gdf['지하철역 밀도'] = 0
 
     # 5. 지하철 위치 좌표
-    coord_file = './data/지하철 위경도.xlsx'
+    coord_file = './data/지하철 위경도.xlsx - 시트1.csv'
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
         try:
@@ -106,7 +116,10 @@ def load_and_merge_data():
     if '버스정류장 밀도' not in gdf.columns: gdf['버스정류장 밀도'] = 0
     if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
     
+    # 합계 계산
     gdf['대중교통 밀도'] = gdf['버스정류장 밀도'].fillna(0) + gdf['지하철역 밀도'].fillna(0)
+    
+    # 부족 순위 (합계가 낮을수록 1등)
     gdf['교통 부족 순위'] = gdf['대중교통 밀도'].rank(ascending=True, method='min')
 
     return gdf, df_stations
@@ -124,14 +137,14 @@ gdf, df_stations = result
 
 st.sidebar.header("🔍 분석 옵션")
 
-# [순서 유지]
+# [요청하신 순서대로 재배치]
 metrics_order = [
     ('상주 인구', '총_상주인구_수'),
     ('인구 밀도', '인구 밀도'),
     ('집객시설 수', '집객시설_수'),
     ('버스정류장 밀도', '버스정류장 밀도'),
-    ('대중교통 밀도 (버스+지하철)', '대중교통 밀도'),
     ('지하철역 밀도', '지하철역 밀도'),
+    ('대중교통 밀도 (버스+지하철)', '대중교통 밀도'), # [변경] 맨 뒤로 이동
     ('교통 부족 순위', '교통 부족 순위')
 ]
 
@@ -155,21 +168,19 @@ if valid_metrics:
     selected_district = st.sidebar.selectbox("자치구 상세 보기", district_list)
 
     # =================================================================
-    # [레이아웃 변경] 지도와 그래프를 2개의 컬럼으로 나란히 배치
+    # [레이아웃] 왼쪽: 지도 / 오른쪽: 그래프
     # =================================================================
-    col_map, col_chart = st.columns([1, 1]) # 1:1 비율
+    col_map, col_chart = st.columns([1, 1])
 
     # ----------------------------------------
-    # [왼쪽] 지도 시각화
+    # [왼쪽] 지도
     # ----------------------------------------
     with col_map:
         st.subheader(f"🗺️ 서울시 {selected_name} 지도")
         
-        # 지도 설정
         center_lat, center_lon, zoom = 37.5665, 126.9780, 9.5
         map_data = gdf.copy()
 
-        # 자치구 필터링 (선택 시 해당 구만 표시)
         if selected_district != '전체 서울시':
             map_data = gdf[gdf['자치구명'] == selected_district]
             center_lat = map_data.geometry.centroid.y.values[0]
@@ -192,7 +203,7 @@ if valid_metrics:
             color_continuous_scale=colorscale
         )
         
-        # 역 위치 점 찍기
+        # 지하철/대중교통 선택 시 점 찍기
         if ('지하철' in selected_name or '대중교통' in selected_name) and not df_stations.empty:
             fig_map.add_trace(go.Scattermapbox(
                 lat=df_stations['point_y'], lon=df_stations['point_x'],
@@ -205,12 +216,11 @@ if valid_metrics:
         st.plotly_chart(fig_map, use_container_width=True)
 
     # ----------------------------------------
-    # [오른쪽] 막대 그래프 시각화
+    # [오른쪽] 막대 그래프
     # ----------------------------------------
     with col_chart:
         st.subheader(f"📊 {selected_name} 순위 비교")
         
-        # 정렬 옵션을 오른쪽 컬럼 안에서 선택
         sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
         
         if sort_opt == "상위":
@@ -230,7 +240,7 @@ if valid_metrics:
         fig_bar.update_layout(
             showlegend=False, 
             xaxis_title=None, 
-            height=500, # 지도와 높이 맞춤
+            height=500,
             margin={"r":0,"t":20,"l":0,"b":0}
         )
         st.plotly_chart(fig_bar, use_container_width=True)
@@ -242,7 +252,6 @@ if valid_metrics:
     st.subheader("📋 상세 데이터 표")
     cols_to_show = ['자치구명'] + list(valid_metrics.values())
     
-    # 표 정렬 (그래프 설정과 연동하거나 별도로 전체 데이터 표시)
     df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
     st.dataframe(df_table, use_container_width=True, hide_index=True)
     
