@@ -67,27 +67,19 @@ def load_and_merge_data():
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
     except: pass
 
-    # 3. 버스정류장 밀도 [!!! 최종 수정된 부분: CRS (좌표계) 5181로 변경 !!!]
+    # 3. 버스정류장 밀도
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
-        
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
-        
-        # [수정] GeoDataFrame 생성 시, EPSG:5181(중부원점)로 가정하고 생성
-        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181")
-        
-        # GPS 좌표계(EPSG:4326)로 변환
-        gdf_bus = gdf_bus.to_crs(epsg=4326)
-
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181").to_crs(epsg=4326) # CRS 변환
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
         cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
         gdf = gdf.merge(cnt, on='자치구명', how='left')
         gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
         gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
-    except Exception as e: 
-        st.error(f"❌ 버스 데이터 로드/분석 충돌: {e}")
+    except: 
         gdf['버스정류장 밀도'] = 0
 
     # 4. 지하철 밀도
@@ -105,8 +97,6 @@ def load_and_merge_data():
                 
                 gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
-            else:
-                gdf['지하철역 밀도'] = 0
         except: 
             gdf['지하철역 밀도'] = 0
     else:
@@ -128,14 +118,14 @@ def load_and_merge_data():
     # 총 교통수단 수
     gdf['총_교통수단_수'] = gdf['버스정류장_수'].fillna(0) + gdf['지하철역_수'].fillna(0)
     
-    # 대중교통 밀도
+    # 대중교통 밀도 (버스수 + 지하철수) / 면적
     gdf['대중교통 밀도'] = gdf['총_교통수단_수'] / gdf['면적(km²)']
     
     # 인구 대비 비율
     population_safe = gdf['총_상주인구_수'].replace(0, 1)
     gdf['인구 대비 교통수단 비율'] = gdf['총_교통수단_수'] / population_safe
     
-    # 교통 부족 순위
+    # 교통 부족 순위 (인구 대비 비율의 오름차순 랭킹: 비율이 낮을수록 1등)
     gdf['교통 부족 순위'] = gdf['인구 대비 교통수단 비율'].rank(ascending=True, method='min')
 
     return gdf, df_stations
@@ -147,6 +137,7 @@ result = load_and_merge_data()
 
 if result is None or result[0] is None:
     st.error("데이터 로드 중 문제가 발생했습니다.")
+    st.info("💡 캐시 클리어 후 재시도해주세요.") # 캐시 오류 안내 유지
     st.stop()
 
 gdf, df_stations = result
