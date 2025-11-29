@@ -13,7 +13,7 @@ st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보�
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 
 # --------------------------------------------------------------------------
-# 2. 데이터 로드 및 병합 함수 (Final Stabilized Version)
+# 2. 데이터 로드 및 병합 함수 (Final Robust Version)
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner="데이터를 로드하고 분석을 진행합니다...")
 def load_and_merge_data():
@@ -67,17 +67,18 @@ def load_and_merge_data():
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
     except: pass
 
-    # 3. 버스정류장 밀도 [!!! 공간 분석 로직 제거 !!!]
-    # 복잡한 공간 연산 대신, 파일 존재 시 Count를 100으로 가정하여 계산합니다.
+    # 3. 버스정류장 밀도
     try:
-        # 파일이 존재만 한다면, 임시로 카운트 로직을 생성합니다.
-        df_bus_test = pd.read_excel('./data/GGD_StationInfo_M.xlsx') 
-        if not df_bus_test.empty:
-            # 안전 초기화: 평균 100개로 가정하고 밀도 계산 (지도가 뜨는 것이 목적)
-            gdf['버스정류장_수'] = 100 # 임시 수치
-            gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
-        else:
-            gdf['버스정류장 밀도'] = 0
+        from shapely.geometry import Point
+        df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
+        geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181").to_crs(epsg=4326) # CRS 변환
+        joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
+        cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
+        
+        gdf = gdf.merge(cnt, on='자치구명', how='left')
+        gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
+        gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
     except: 
         gdf['버스정류장 밀도'] = 0
 
@@ -138,7 +139,7 @@ result = load_and_merge_data()
 
 if result is None or result[0] is None:
     st.error("데이터 로드 중 문제가 발생했습니다.")
-    st.info("💡 최종 해결 방법: 앱을 완전히 삭제하고 다시 배포해주세요. (서버 초기화 필요)")
+    st.info("💡 캐시 클리어 후 재시도해주세요.")
     st.stop()
 
 gdf, df_stations = result
@@ -176,7 +177,10 @@ if valid_metrics:
     selected_district = st.sidebar.selectbox("자치구 상세 보기", district_list)
 
     # --- 색상 조건 설정 ---
-    colorscale = 'Blues' if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수'] else 'Reds' 
+    if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수']:
+        colorscale = 'Blues' 
+    else:
+        colorscale = 'Reds' 
 
     # =================================================================
     # [레이아웃] 지도와 그래프 병렬 배치
