@@ -32,7 +32,7 @@ if os.path.exists('./data'):
         '서울시 상권분석서비스(상주인구-자치구).csv',
         '서울시 상권분석서비스(집객시설-자치구).csv',
         'GGD_StationInfo_M.xlsx',
-        'seoul_subway_density.xlsx - Sheet1.csv'
+        'seoul_subway_density.xlsx'
     ]
     
     for f in required_files:
@@ -66,3 +66,4 @@ try:
     st.success("✅ 지도 데이터(GeoJSON) 다운로드 성공!")
 except Exception as e:
     st.error(f"❌ 지도 다운로드 실패: {e}")
+
