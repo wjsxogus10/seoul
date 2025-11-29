@@ -32,8 +32,6 @@ def load_and_merge_data():
             return None, None
             
         gdf['면적(km²)'] = gdf.geometry.to_crs(epsg=5179).area / 1_000_000
-        # [NEW FIX]: 지도 데이터의 자치구명 공백 제거
-        gdf['자치구명'] = gdf['자치구명'].astype(str).str.strip()
     except Exception as e:
         st.error(f"❌ GeoJSON 로드 실패: {e}")
         return None, None
@@ -50,9 +48,6 @@ def load_and_merge_data():
     try:
         df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
         grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
-        # [NEW FIX]: 병합 전에 자치구명 컬럼 공백 제거
-        grp['자치구명'] = grp['자치구명'].astype(str).str.strip()
-        
         gdf = gdf.merge(grp, on='자치구명', how='left')
         gdf['총_상주인구_수'] = gdf['총_상주인구_수'].fillna(0)
         gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
@@ -67,7 +62,6 @@ def load_and_merge_data():
         if biz_count_col and gu_col:
             grp = df_biz.groupby(gu_col)[biz_count_col].mean().reset_index()
             grp = grp.rename(columns={gu_col: '자치구명', biz_count_col: '집객시설 수'})
-            grp['자치구명'] = grp['자치구명'].astype(str).str.strip() # [NEW FIX]
             
             gdf = gdf.merge(grp, on='자치구명', how='left')
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
@@ -79,21 +73,12 @@ def load_and_merge_data():
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
         gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5181").to_crs(epsg=4326) # CRS 변환
-        
-        # 병합 전 gdf_bus의 자치구명 컬럼에 공백 제거를 위해 임시로 컬럼 생성
-        gdf_bus['자치구명'] = gdf['자치구명'] # sjoin이후에 컬럼이 생기므로, gdf에서 가져오거나 새로 만들지 않습니다.
-        
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
+        cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
-        # Bus 데이터는 공간 병합 결과에 따라 groupby를 진행하므로, 자치구명 존재를 가정합니다.
-        if '자치구명' in joined.columns:
-             joined['자치구명'] = joined['자치구명'].astype(str).str.strip() # [NEW FIX]
-             cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
-             
-             gdf = gdf.merge(cnt, on='자치구명', how='left')
-             gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
-             gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
-        
+        gdf = gdf.merge(cnt, on='자치구명', how='left')
+        gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
+        gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
     except: 
         gdf['버스정류장 밀도'] = 0
 
@@ -109,13 +94,15 @@ def load_and_merge_data():
             
             if gu_col and dens_col:
                 rename_map = {gu_col: '자치구명', dens_col: '지하철역 밀도'}
-                df_dens = df_dens.rename(columns=rename_map)
-                df_dens['자치구명'] = df_dens['자치구명'].astype(str).str.strip() # [NEW FIX]
-
-                gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
+                
+                gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+            else:
+                gdf['지하철역 밀도'] = 0
         except: 
             gdf['지하철역 밀도'] = 0
+    else:
+        gdf['지하철역 밀도'] = 0
 
     # 5. 지하철 위치 좌표
     coord_file = './data/지하철 위경도.CSV'
