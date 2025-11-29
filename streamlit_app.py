@@ -67,7 +67,7 @@ def load_and_merge_data():
         gdf['버스정류장 밀도'] = 0
 
     # 4. [수정됨] 지하철 밀도 (파일명 정확히 지정 + 안전장치)
-    density_file = '지하철 밀도.xlsx - Sheet1.csv'
+    density_file = '지하철 밀도.xlsx'
     density_path = f'./data/{density_file}'
     
     if os.path.exists(density_path):
@@ -260,3 +260,4 @@ if valid_metrics:
 
 else:
     st.warning("분석할 데이터 파일이 없습니다. data 폴더를 확인해주세요.")
+
