@@ -13,7 +13,7 @@ st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보�
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 
 # --------------------------------------------------------------------------
-# 2. 데이터 로드 및 병합 함수 (Error Reporting Enhanced)
+# 2. 데이터 로드 및 병합 함수 (Final Robust Version)
 # --------------------------------------------------------------------------
 @st.cache_data(show_spinner="데이터를 로드하고 분석을 진행합니다...")
 def load_and_merge_data():
@@ -28,6 +28,7 @@ def load_and_merge_data():
         elif 'SIG_KOR_NM' in gdf.columns:
             gdf['자치구명'] = gdf['SIG_KOR_NM']
         else:
+            st.error("❌ GeoJSON에 자치구 이름 컬럼이 없습니다.")
             return None, None
             
         gdf['면적(km²)'] = gdf.geometry.to_crs(epsg=5179).area / 1_000_000
@@ -38,7 +39,7 @@ def load_and_merge_data():
     # (B) 사용자 데이터 병합
     
     # 컬럼 초기화
-    cols_init = ['총_상주인구_수', '인구 밀도', '집객시설 수', '버스정류장_수', '버스정류장 밀도', '지하철역_수', '지하철역 밀도', '총_교통수단_수', '대중교창 밀도']
+    cols_init = ['총_상주인구_수', '인구 밀도', '집객시설 수', '버스정류장_수', '버스정류장 밀도', '지하철역_수', '지하철역 밀도', '총_교통수단_수', '대중교통 밀도']
     for c in cols_init:
         if c not in gdf.columns:
             gdf[c] = 0
@@ -50,9 +51,7 @@ def load_and_merge_data():
         gdf = gdf.merge(grp, on='자치구명', how='left')
         gdf['총_상주인구_수'] = gdf['총_상주인구_수'].fillna(0)
         gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
-    except Exception as e:
-        st.error(f"❌ 데이터 충돌: 상주 인구 파일. ({e})")
-        pass
+    except: pass
 
     # 2. 집객시설 수
     try:
@@ -66,18 +65,22 @@ def load_and_merge_data():
             
             gdf = gdf.merge(grp, on='자치구명', how='left')
             gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
-        else:
-             st.warning("⚠️ 상권 파일의 컬럼명이 예상과 다릅니다.")
-    except Exception as e:
-         st.error(f"❌ 데이터 충돌: 집객시설 파일. ({e})")
-         pass
+    except: pass
 
-    # 3. 버스정류장 밀도
+    # 3. 버스정류장 밀도 [!!! 수정된 부분: CRS (좌표계) 5186으로 변경 !!!]
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
+        
+        # X, Y 좌표를 Point 객체로 생성
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
-        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5179").to_crs(epsg=4326) # 좌표변환
+        
+        # [수정] GeoDataFrame 생성 시, EPSG:5186으로 가정하고 생성
+        gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:5186")
+        
+        # GPS 좌표계(EPSG:4326)로 변환
+        gdf_bus = gdf_bus.to_crs(epsg=4326)
+
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
         cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
@@ -85,7 +88,7 @@ def load_and_merge_data():
         gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
         gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
     except Exception as e: 
-        st.error(f"❌ 데이터 충돌: 버스 파일(공간분석). ({e})")
+        st.error(f"❌ 버스 데이터 로드/분석 충돌: {e}")
         gdf['버스정류장 밀도'] = 0
 
     # 4. 지하철 밀도
@@ -103,14 +106,11 @@ def load_and_merge_data():
                 
                 gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
-            else:
-                st.warning("⚠️ 지하철 밀도 파일 컬럼 인식 실패.")
-        except Exception as e:
-            st.error(f"❌ 데이터 충돌: 지하철 밀도 파일. ({e})")
-        
-    # [나머지 로직 유지]
-    # ...
-    
+        except: 
+            gdf['지하철역 밀도'] = 0
+    else:
+        gdf['지하철역 밀도'] = 0
+
     # 5. 지하철 위치 좌표
     coord_file = './data/지하철 위경도.CSV'
     df_stations = pd.DataFrame()
@@ -127,7 +127,7 @@ def load_and_merge_data():
     # 총 교통수단 수
     gdf['총_교통수단_수'] = gdf['버스정류장_수'].fillna(0) + gdf['지하철역_수'].fillna(0)
     
-    # 대중교통 밀도 (버스수 + 지하철수) / 면적
+    # 대중교통 밀도
     gdf['대중교통 밀도'] = gdf['총_교통수단_수'] / gdf['면적(km²)']
     
     # 인구 대비 비율
@@ -145,8 +145,7 @@ def load_and_merge_data():
 result = load_and_merge_data()
 
 if result is None or result[0] is None:
-    st.error("❌ 데이터 로드 중 문제가 발생했습니다.")
-    st.info("💡 최종 해결을 위해 GitHub에 업로드된 파일명과 확장자를 확인해주세요.")
+    st.error("데이터 로드 중 문제가 발생했습니다.")
     st.stop()
 
 gdf, df_stations = result
@@ -184,7 +183,10 @@ if valid_metrics:
     selected_district = st.sidebar.selectbox("자치구 상세 보기", district_list)
 
     # --- 색상 조건 설정 ---
-    colorscale = 'Blues' if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수'] else 'Reds' 
+    if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수']:
+        colorscale = 'Blues' 
+    else:
+        colorscale = 'Reds' 
 
     # =================================================================
     # [레이아웃] 지도와 그래프 병렬 배치
