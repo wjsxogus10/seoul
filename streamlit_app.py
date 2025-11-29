@@ -97,6 +97,8 @@ def load_and_merge_data():
                 
                 gdf = gdf.merge(df_dens.rename(columns=rename_map)[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+            else:
+                gdf['지하철역 밀도'] = 0
         except: 
             gdf['지하철역 밀도'] = 0
     else:
