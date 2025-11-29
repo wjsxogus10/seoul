@@ -4,4 +4,4 @@ geopandas
 plotly
 openpyxl
 shapely
-matplotlib
+requests
