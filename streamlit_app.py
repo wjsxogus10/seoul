@@ -17,7 +17,7 @@ st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 @st.cache_data
 def load_data():
     # -----------------------------------------------------------
-    # (A) 지도 데이터 (인터넷 공공 데이터)
+    # (A) 지도 데이터
     # -----------------------------------------------------------
     map_url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     try:
@@ -67,63 +67,57 @@ def load_data():
         gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
     except: pass
 
-    # 4. [핵심] 지하철 데이터 (두 파일 모두 활용)
-    
-    # (4-1) 밀도 파일 읽기 (색칠용)
+    # 4. [핵심 수정] 지하철 밀도 (업로드한 파일명 정확히 지정)
     density_file = './data/seoul_subway_density.xlsx - Sheet1.csv'
+    
     if os.path.exists(density_file):
         try:
+            # 인코딩 자동 감지
             try: df_dens = pd.read_csv(density_file, encoding='utf-8')
             except: df_dens = pd.read_csv(density_file, encoding='cp949')
             
-            # 컬럼 정리
+            # [중요] 파일의 컬럼 이름을 코드에 맞게 변경
+            # 파일 컬럼: '자치구_코드_명', '지하철역_밀도(개/km²)'
+            
+            # 1. 자치구 이름 컬럼 통일
             if '자치구_코드_명' in df_dens.columns:
-                df_dens = df_dens.rename(columns={'자치구_코드_명': '자치구명', '지하철역_밀도(개/km²)': '지하철역 밀도', '지하철역_수': '지하철역_수'})
+                df_dens = df_dens.rename(columns={'자치구_코드_명': '자치구명'})
             
-            # 병합
-            gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도', '지하철역_수']], on='자치구명', how='left')
-            gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
-            gdf['지하철역_수'] = gdf['지하철역_수'].fillna(0)
-        except: pass
+            # 2. 밀도 컬럼 이름 통일
+            if '지하철역_밀도(개/km²)' in df_dens.columns:
+                df_dens = df_dens.rename(columns={'지하철역_밀도(개/km²)': '지하철역 밀도'})
+            
+            # 3. 병합
+            if '자치구명' in df_dens.columns and '지하철역 밀도' in df_dens.columns:
+                gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
+                gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+                st.sidebar.success(f"✅ 지하철 밀도 데이터 로드 성공!")
+            else:
+                st.sidebar.error(f"❌ 컬럼 이름 불일치. 파일 컬럼: {list(df_dens.columns)}")
+                gdf['지하철역 밀도'] = 0
+        except Exception as e:
+            st.sidebar.error(f"지하철 파일 읽기 실패: {e}")
+            gdf['지하철역 밀도'] = 0
     else:
+        st.sidebar.warning("⚠️ 지하철 밀도 파일이 data 폴더에 없습니다.")
         gdf['지하철역 밀도'] = 0
-        gdf['지하철역_수'] = 0
-
-    # (4-2) 좌표 파일 읽기 (지도 위 점 찍기용)
-    coord_file = './data/지하철 위경도.xlsx - 시트1.csv'
-    df_stations = pd.DataFrame() # 빈 데이터프레임 초기화
-    
-    if os.path.exists(coord_file):
-        try:
-            try: df_stations = pd.read_csv(coord_file, encoding='utf-8')
-            except: df_stations = pd.read_csv(coord_file, encoding='cp949')
-            
-            # 좌표 컬럼 찾기 (point_x, point_y)
-            if 'point_x' in df_stations.columns and 'point_y' in df_stations.columns:
-                df_stations = df_stations.dropna(subset=['point_x', 'point_y'])
-                # 필요한 정보만 남기기 (역 이름 등)
-                if 'name' in df_stations.columns:
-                    df_stations = df_stations[['name', 'point_x', 'point_y']]
-                else:
-                    df_stations = df_stations[['point_x', 'point_y']]
-        except: pass
 
     # 5. 교통 부족 순위
     if '버스정류장 밀도' in gdf.columns and '지하철역 밀도' in gdf.columns:
         total_density = gdf['버스정류장 밀도'] + gdf['지하철역 밀도']
         gdf['교통 부족 순위'] = total_density.rank(ascending=True, method='min')
 
-    return gdf, df_stations
+    return gdf
 
 # --------------------------------------------------------------------------
 # 3. 화면 구성
 # --------------------------------------------------------------------------
-gdf, df_stations = load_data()
+gdf = load_data()
 
 if gdf is not None:
     st.sidebar.header("🔍 분석 옵션")
     
-    # [요청 순서 적용]
+    # [요청하신 순서]
     metrics_order = [
         ('상주 인구', '총_상주인구_수'),
         ('인구 밀도', '인구 밀도'),
@@ -136,7 +130,6 @@ if gdf is not None:
     valid_metrics = {k: v for k, v in metrics_order if v in gdf.columns}
     
     if valid_metrics:
-        # 지표 선택
         selected_name = st.sidebar.radio("분석할 지표 선택", list(valid_metrics.keys()))
         selected_col = valid_metrics[selected_name]
         
@@ -158,25 +151,12 @@ if gdf is not None:
 
         colorscale = 'Reds_r' if '부족' in selected_name else 'YlGnBu'
 
-        # 기본 지도 (색칠)
         fig = px.choropleth_mapbox(
             gdf, geojson=gdf.geometry.__geo_interface__, locations=gdf.index,
             color=selected_col, mapbox_style="carto-positron", zoom=zoom,
             center={"lat": center_lat, "lon": center_lon}, opacity=0.6,
             hover_name='자치구명', hover_data=[selected_col], color_continuous_scale=colorscale
         )
-        
-        # [NEW] 지하철 밀도를 볼 때, 실제 역 위치(점)도 같이 찍어주기
-        if selected_name == '지하철역 밀도' and not df_stations.empty:
-            fig.add_trace(go.Scattermapbox(
-                lat=df_stations['point_y'],
-                lon=df_stations['point_x'],
-                mode='markers',
-                marker=go.scattermapbox.Marker(size=6, color='red'),
-                text=df_stations['name'] if 'name' in df_stations.columns else None,
-                name='지하철역 위치'
-            ))
-
         fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
         st.plotly_chart(fig, use_container_width=True)
 
