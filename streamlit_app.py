@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import os
 
 # --------------------------------------------------------------------------
-# 1. 페이지 기본 설정
+# 1. 페이지 기본 설정 (레이아웃 wide 필수)
 # --------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보드")
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
@@ -16,27 +16,24 @@ st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 # --------------------------------------------------------------------------
 @st.cache_data
 def load_and_merge_data():
-    # (A) 지도 데이터 (인터넷 공공 데이터 다운로드)
+    # (A) 지도 데이터
     map_url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     try:
         gdf = geopandas.read_file(map_url)
-        gdf = gdf.to_crs(epsg=4326) # 지도 표시용 좌표계
+        gdf = gdf.to_crs(epsg=4326)
         
-        # 컬럼 이름 통일
         if 'name' in gdf.columns:
             gdf = gdf.rename(columns={'name': '자치구명'})
         elif 'SIG_KOR_NM' in gdf.columns:
             gdf = gdf.rename(columns={'SIG_KOR_NM': '자치구명'})
             
-        # 면적 계산 (도형 기반)
         gdf_area = gdf.to_crs(epsg=5179)
         gdf['면적(km²)'] = gdf_area.geometry.area / 1_000_000
     except Exception as e:
         st.error(f"지도 로드 실패: {e}")
         return None, None
 
-    # (B) 데이터 병합 시작
-    # -----------------------------------------------------------
+    # (B) 사용자 데이터 병합
     
     # 1. 상주 인구
     try:
@@ -55,7 +52,7 @@ def load_and_merge_data():
         gdf = gdf.merge(grp, on='자치구명', how='left')
     except: pass
 
-    # 3. 버스정류장 밀도 (좌표 계산)
+    # 3. 버스정류장 밀도
     try:
         from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
@@ -69,21 +66,25 @@ def load_and_merge_data():
     except: 
         gdf['버스정류장 밀도'] = 0
 
-    # 4. 지하철 밀도 (업로드한 밀도 파일 사용)
-    # 파일명: 지하철 밀도.xlsx - Sheet1.csv
+    # 4. 지하철 밀도
     density_file = './data/지하철 밀도.xlsx - Sheet1.csv'
     if os.path.exists(density_file):
         try:
             try: df_dens = pd.read_csv(density_file, encoding='utf-8')
             except: df_dens = pd.read_csv(density_file, encoding='cp949')
             
-            # 컬럼 매핑
             gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
             dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
             
             if gu_col and dens_col:
                 df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
-                gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
+                cols_to_merge = ['자치구명', '지하철역 밀도']
+                cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
+                if cnt_col:
+                    df_dens = df_dens.rename(columns={cnt_col: '지하철역_수'})
+                    cols_to_merge.append('지하철역_수')
+
+                gdf = gdf.merge(df_dens[cols_to_merge], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
             else:
                 gdf['지하철역 밀도'] = 0
@@ -91,16 +92,14 @@ def load_and_merge_data():
     else:
         gdf['지하철역 밀도'] = 0
 
-    # 5. 지하철 위치 좌표 (점 찍기용)
-    coord_file = './data/지하철 위경도.xlsx - 시트1.csv'
+    # 5. 지하철 위치 좌표
+    coord_file = './data/지하철 위경도.xlsx'
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
         try:
             try: df_stations = pd.read_csv(coord_file, encoding='utf-8')
             except: df_stations = pd.read_csv(coord_file, encoding='cp949')
-            # point_x, point_y가 있어야 함
-            if 'point_x' not in df_stations.columns:
-                df_stations = pd.DataFrame()
+            if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
         except: pass
 
     # 6. 대중교통 밀도 & 교통 부족 순위
@@ -125,7 +124,7 @@ gdf, df_stations = result
 
 st.sidebar.header("🔍 분석 옵션")
 
-# [요청하신 순서]
+# [순서 유지]
 metrics_order = [
     ('상주 인구', '총_상주인구_수'),
     ('인구 밀도', '인구 밀도'),
@@ -136,7 +135,6 @@ metrics_order = [
     ('교통 부족 순위', '교통 부족 순위')
 ]
 
-# 데이터가 존재하는 지표만 메뉴에 표시
 valid_metrics = {}
 for k, v in metrics_order:
     if v in gdf.columns:
@@ -149,95 +147,105 @@ if valid_metrics:
     selected_col = valid_metrics[selected_name]
     
     st.sidebar.markdown("---")
-    # 2. 개수 조절 슬라이더
+    # 2. 개수 조절
     display_count = st.sidebar.slider("📊 그래프/표 표시 개수", 5, 25, 10)
     st.sidebar.markdown("---")
     # 3. 자치구 선택
     district_list = ['전체 서울시'] + sorted(gdf['자치구명'].unique().tolist())
     selected_district = st.sidebar.selectbox("자치구 상세 보기", district_list)
 
-    # --- (1) 지도 시각화 ---
-    st.subheader(f"🗺️ 서울시 {selected_name} 지도")
-    
-    # 지도 기본 설정 (서울 전체)
-    center_lat, center_lon, zoom = 37.5665, 126.9780, 9.5
-    map_data = gdf.copy() # 기본 데이터
+    # =================================================================
+    # [레이아웃 변경] 지도와 그래프를 2개의 컬럼으로 나란히 배치
+    # =================================================================
+    col_map, col_chart = st.columns([1, 1]) # 1:1 비율
 
-    # [수정됨] 자치구 선택 시 해당 구만 지도에 표시!
-    if selected_district != '전체 서울시':
-        map_data = gdf[gdf['자치구명'] == selected_district]
-        # 해당 구로 줌인
-        center_lat = map_data.geometry.centroid.y.values[0]
-        center_lon = map_data.geometry.centroid.x.values[0]
-        zoom = 11.5
-
-    # 색상 설정
-    colorscale = 'Reds_r' if '부족' in selected_name else 'YlGnBu'
-
-    fig = px.choropleth_mapbox(
-        map_data, # 필터링된 데이터 사용
-        geojson=map_data.geometry.__geo_interface__,
-        locations=map_data.index,
-        color=selected_col,
-        mapbox_style="carto-positron",
-        zoom=zoom,
-        center={"lat": center_lat, "lon": center_lon},
-        opacity=0.6,
-        hover_name='자치구명',
-        hover_data=[selected_col],
-        color_continuous_scale=colorscale
-    )
-    
-    # [Point] 지하철/대중교통 선택 시 역 위치 표시
-    if ('지하철' in selected_name or '대중교통' in selected_name) and not df_stations.empty:
-        # 역 데이터도 선택된 구 근처만 보여주면 좋겠지만, 
-        # 복잡함을 피하기 위해 전체 역을 보여주되 줌인된 상태로 둠
-        fig.add_trace(go.Scattermapbox(
-            lat=df_stations['point_y'], lon=df_stations['point_x'],
-            mode='markers', marker=go.scattermapbox.Marker(size=5, color='red'),
-            name='지하철역 위치',
-            text=df_stations['name'] if 'name' in df_stations.columns else None
-        ))
-
-    fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- (2) 그래프 시각화 ---
-    st.subheader(f"📊 {selected_name} 순위 비교")
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        sort_opt = st.radio("정렬:", ["상위", "하위"], horizontal=True)
-    
-    # 정렬 및 개수 자르기
-    if sort_opt == "상위":
-        df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
-    else:
-        df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
+    # ----------------------------------------
+    # [왼쪽] 지도 시각화
+    # ----------------------------------------
+    with col_map:
+        st.subheader(f"🗺️ 서울시 {selected_name} 지도")
         
-    # 선택된 자치구 강조 (빨간색)
-    df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
-    
-    fig_bar = px.bar(
-        df_sorted, x='자치구명', y=selected_col, 
-        text=selected_col, color='color', color_discrete_map='identity'
-    )
-    
-    # 숫자 포맷 (순위/인구는 정수, 밀도는 소수점)
-    fmt = '%{text:.0f}' if '순위' in selected_name or '인구' in selected_name else '%{text:.4f}'
-    fig_bar.update_traces(texttemplate=fmt, textposition='outside')
-    fig_bar.update_layout(showlegend=False, xaxis_title=None)
-    st.plotly_chart(fig_bar, use_container_width=True)
+        # 지도 설정
+        center_lat, center_lon, zoom = 37.5665, 126.9780, 9.5
+        map_data = gdf.copy()
 
-    # --- (3) 상세 표 ---
+        # 자치구 필터링 (선택 시 해당 구만 표시)
+        if selected_district != '전체 서울시':
+            map_data = gdf[gdf['자치구명'] == selected_district]
+            center_lat = map_data.geometry.centroid.y.values[0]
+            center_lon = map_data.geometry.centroid.x.values[0]
+            zoom = 11.0
+
+        colorscale = 'Reds_r' if '부족' in selected_name else 'YlGnBu'
+
+        fig_map = px.choropleth_mapbox(
+            map_data, 
+            geojson=map_data.geometry.__geo_interface__, 
+            locations=map_data.index,
+            color=selected_col, 
+            mapbox_style="carto-positron", 
+            zoom=zoom,
+            center={"lat": center_lat, "lon": center_lon}, 
+            opacity=0.6,
+            hover_name='자치구명', 
+            hover_data=[selected_col], 
+            color_continuous_scale=colorscale
+        )
+        
+        # 역 위치 점 찍기
+        if ('지하철' in selected_name or '대중교통' in selected_name) and not df_stations.empty:
+            fig_map.add_trace(go.Scattermapbox(
+                lat=df_stations['point_y'], lon=df_stations['point_x'],
+                mode='markers', marker=go.scattermapbox.Marker(size=5, color='red'),
+                name='지하철역 위치',
+                text=df_stations['name'] if 'name' in df_stations.columns else None
+            ))
+
+        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
+        st.plotly_chart(fig_map, use_container_width=True)
+
+    # ----------------------------------------
+    # [오른쪽] 막대 그래프 시각화
+    # ----------------------------------------
+    with col_chart:
+        st.subheader(f"📊 {selected_name} 순위 비교")
+        
+        # 정렬 옵션을 오른쪽 컬럼 안에서 선택
+        sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
+        
+        if sort_opt == "상위":
+            df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
+        else:
+            df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
+            
+        df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
+        
+        fig_bar = px.bar(
+            df_sorted, x='자치구명', y=selected_col, 
+            text=selected_col, color='color', color_discrete_map='identity'
+        )
+        
+        fmt = '%{text:.0f}' if '순위' in selected_name or '인구' in selected_name else '%{text:.4f}'
+        fig_bar.update_traces(texttemplate=fmt, textposition='outside')
+        fig_bar.update_layout(
+            showlegend=False, 
+            xaxis_title=None, 
+            height=500, # 지도와 높이 맞춤
+            margin={"r":0,"t":20,"l":0,"b":0}
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ----------------------------------------
+    # [하단] 상세 데이터 표
+    # ----------------------------------------
     st.markdown("---")
     st.subheader("📋 상세 데이터 표")
     cols_to_show = ['자치구명'] + list(valid_metrics.values())
     
-    # 표도 정렬 옵션에 맞춰서 보여줌
+    # 표 정렬 (그래프 설정과 연동하거나 별도로 전체 데이터 표시)
     df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
     st.dataframe(df_table, use_container_width=True, hide_index=True)
     
-    # 전체 데이터 다운로드 버튼
     csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
 
