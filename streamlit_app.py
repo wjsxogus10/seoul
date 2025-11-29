@@ -74,9 +74,8 @@ def load_and_merge_data():
             
             if gu_col and dens_col:
                 df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
-                # 병합
+                # 병합 (역 개수도 있으면 가져옴)
                 cols_to_merge = ['자치구명', '지하철역 밀도']
-                # 역 개수 컬럼도 있으면 가져오기
                 cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
                 if cnt_col:
                     df_dens = df_dens.rename(columns={cnt_col: '지하철역_수'})
@@ -90,7 +89,7 @@ def load_and_merge_data():
     else:
         gdf['지하철역 밀도'] = 0
 
-    # 5. 지하철 위치 좌표 (점 찍기용)
+    # 5. 지하철 위치 좌표
     coord_file = './data/지하철 위경도.xlsx - 시트1.csv'
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
@@ -100,15 +99,11 @@ def load_and_merge_data():
             if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
         except: pass
 
-    # 6. [NEW] 대중교통 밀도 & 교통 부족 순위 계산
-    # 컬럼이 없으면 0으로 채움
+    # 6. 대중교통 밀도 & 교통 부족 순위
     if '버스정류장 밀도' not in gdf.columns: gdf['버스정류장 밀도'] = 0
     if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
     
-    # 대중교통 밀도 = 버스 밀도 + 지하철 밀도
     gdf['대중교통 밀도'] = gdf['버스정류장 밀도'].fillna(0) + gdf['지하철역 밀도'].fillna(0)
-    
-    # 부족 순위 (밀도가 낮을수록 1등)
     gdf['교통 부족 순위'] = gdf['대중교통 밀도'].rank(ascending=True, method='min')
 
     return gdf, df_stations
@@ -126,14 +121,14 @@ gdf, df_stations = result
 
 st.sidebar.header("🔍 분석 옵션")
 
-# [요청하신 순서 + 대중교통 밀도 추가]
+# [요청하신 순서 변경: 버스정류장 -> 대중교통 -> 지하철]
 metrics_order = [
     ('상주 인구', '총_상주인구_수'),
     ('인구 밀도', '인구 밀도'),
     ('집객시설 수', '집객시설_수'),
-    ('대중교통 밀도 (버스+지하철)', '대중교통 밀도'), # [NEW]
-    ('버스정류장 밀도', '버스정류장 밀도'),
-    ('지하철역 밀도', '지하철역 밀도'),
+    ('버스정류장 밀도', '버스정류장 밀도'),          # 4번째
+    ('대중교통 밀도 (버스+지하철)', '대중교통 밀도'), # 5번째
+    ('지하철역 밀도', '지하철역 밀도'),            # 6번째
     ('교통 부족 순위', '교통 부족 순위')
 ]
 
@@ -141,7 +136,6 @@ metrics_order = [
 valid_metrics = {}
 for k, v in metrics_order:
     if v in gdf.columns:
-        # 데이터가 있거나(sum > 0), 부족 순위인 경우
         if gdf[v].sum() > 0 or '순위' in k:
             valid_metrics[k] = v
 
@@ -151,7 +145,7 @@ if valid_metrics:
     selected_col = valid_metrics[selected_name]
     
     st.sidebar.markdown("---")
-    # 2. 개수 조절 슬라이더
+    # 2. 개수 조절
     display_count = st.sidebar.slider("📊 그래프/표 표시 개수", 5, 25, 10)
     st.sidebar.markdown("---")
     # 3. 자치구 선택
@@ -167,7 +161,7 @@ if valid_metrics:
         center_lat, center_lon = d.geometry.centroid.y.values[0], d.geometry.centroid.x.values[0]
         zoom = 11.5
 
-    # 색상 설정 (부족 순위만 빨간색, 나머지는 파란색/초록색)
+    # 색상 설정
     colorscale = 'Reds_r' if '부족' in selected_name else 'YlGnBu'
 
     fig = px.choropleth_mapbox(
@@ -177,7 +171,7 @@ if valid_metrics:
         hover_name='자치구명', hover_data=[selected_col], color_continuous_scale=colorscale
     )
     
-    # [특수 기능] 지하철이나 대중교통을 볼 때, 실제 역사 위치(점) 표시
+    # [Point] 지하철/대중교통 선택 시 역 위치 표시
     if ('지하철' in selected_name or '대중교통' in selected_name) and not df_stations.empty:
         fig.add_trace(go.Scattermapbox(
             lat=df_stations['point_y'], lon=df_stations['point_x'],
@@ -195,13 +189,11 @@ if valid_metrics:
     with col2:
         sort_opt = st.radio("정렬:", ["상위", "하위"], horizontal=True)
     
-    # 정렬 및 개수 자르기
     if sort_opt == "상위":
         df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
     else:
         df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
         
-    # 선택된 자치구 강조 (빨간색)
     df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
     
     fig_bar = px.bar(
@@ -209,7 +201,6 @@ if valid_metrics:
         text=selected_col, color='color', color_discrete_map='identity'
     )
     
-    # 숫자 포맷 (순위/인구는 정수, 밀도는 소수점)
     fmt = '%{text:.0f}' if '순위' in selected_name or '인구' in selected_name else '%{text:.4f}'
     fig_bar.update_traces(texttemplate=fmt, textposition='outside')
     fig_bar.update_layout(showlegend=False, xaxis_title=None)
@@ -220,11 +211,9 @@ if valid_metrics:
     st.subheader("📋 상세 데이터 표")
     cols_to_show = ['자치구명'] + list(valid_metrics.values())
     
-    # 표도 정렬 옵션에 맞춰서 보여줌
     df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
     st.dataframe(df_table, use_container_width=True, hide_index=True)
     
-    # 전체 데이터 다운로드 버튼
     csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
 
