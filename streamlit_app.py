@@ -4,6 +4,7 @@ import geopandas
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+from shapely.geometry import Point
 
 # --------------------------------------------------------------------------
 # 1. 페이지 기본 설정
@@ -35,12 +36,12 @@ def load_and_merge_data():
 
     # (B) 사용자 데이터 병합
     
-    # 기본 컬럼 초기화
+    # 컬럼 초기화
     cols_init = ['총_상주인구_수', '인구 밀도', '집객시설 수', '버스정류장_수', '버스정류장 밀도', '지하철역_수', '지하철역 밀도']
     for c in cols_init:
         gdf[c] = 0
 
-    # 1. 상주 인구 & 인구 밀도
+    # 1. 상주 인구
     try:
         df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
         grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
@@ -49,12 +50,23 @@ def load_and_merge_data():
         gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
     except: pass
 
-    # 2. 집객시설 수
+    # 2. [수정됨] 집객시설 수 (컬럼 검색)
     try:
         df_biz = pd.read_csv('./data/서울시 상권분석서비스(집객시설-자치구).csv', encoding='cp949')
-        grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
-        gdf = gdf.merge(grp, on='자치구명', how='left')
-        gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
+        
+        # '집객시설' 또는 '시설수' 컬럼을 유연하게 찾음
+        biz_count_col = next((c for c in df_biz.columns if '집객시설' in c or '시설수' in c), None)
+        gu_col = next((c for c in df_biz.columns if '자치구' in c), None)
+        
+        if biz_count_col and gu_col:
+            grp = df_biz.groupby(gu_col)[biz_count_col].mean().reset_index()
+            grp = grp.rename(columns={gu_col: '자치구명', biz_count_col: '집객시설 수'})
+            
+            gdf = gdf.merge(grp, on='자치구명', how='left')
+            gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
+        else:
+            st.sidebar.error("❌ 상권 파일에서 '집객시설' 컬럼을 찾을 수 없습니다.")
+
     except: pass
 
     # 3. 버스정류장 밀도
@@ -91,18 +103,20 @@ def load_and_merge_data():
                 
                 gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도', '지하철역_수']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
-                gdf['지하철역_수'] = gdf['지하철역_수'].fillna(0)
             else:
                 gdf['지하철역 밀도'] = 0
         except: 
             gdf['지하철역 밀도'] = 0
+    else:
+        gdf['지하철역 밀도'] = 0
 
-    # 5. 지하철 위치 좌표 (점 찍기용 - 시각화에서는 사용하지 않지만 로직은 유지)
+    # 5. 지하철 위치 좌표 (시각화 기능 삭제됨, 로직만 유지)
     coord_file = './data/지하철 위경도.CSV'
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
         try:
-            df_stations = pd.read_csv(coord_file, encoding='euc-kr')
+            df_stations = pd.read_csv(coord_file, encoding='utf-8')
+            if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
         except: pass
 
     # 6. 대중교통 밀도 & 교통 부족 순위 계산
@@ -110,15 +124,17 @@ def load_and_merge_data():
     if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
     if '총_상주인구_수' not in gdf.columns: gdf['총_상주인구_수'] = 0
     
-    # (6-1) 대중교통 밀도 = (버스수 + 지하철수) / 면적
+    # 총 교통수단 수
     gdf['총_교통수단_수'] = gdf['버스정류장_수'] + gdf['지하철역_수']
+    
+    # 대중교통 밀도 (버스수 + 지하철수) / 면적
     gdf['대중교통 밀도'] = gdf['총_교통수단_수'] / gdf['면적(km²)']
     
-    # (6-2) 인구 대비 비율
+    # 인구 대비 순위 (순위 계산을 위한 비율)
     population_safe = gdf['총_상주인구_수'].replace(0, 1)
     gdf['인구 대비 교통수단 비율'] = gdf['총_교통수단_수'] / population_safe
     
-    # (6-3) 교통 부족 순위 (인구 대비 비율의 오름차순 랭킹: 비율이 낮을수록 1등)
+    # 교통 부족 순위 (인구 대비 비율의 오름차순 랭킹: 비율이 낮을수록 1등)
     gdf['교통 부족 순위'] = gdf['인구 대비 교통수단 비율'].rank(ascending=True, method='min')
 
     return gdf, df_stations
@@ -166,18 +182,16 @@ if valid_metrics:
     district_list = ['전체 서울시'] + sorted(gdf['자치구명'].unique().tolist())
     selected_district = st.sidebar.selectbox("자치구 상세 보기", district_list)
 
+    # --- 색상 조건 설정 ---
+    if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수']:
+        colorscale = 'Blues' 
+    else:
+        colorscale = 'Reds' 
+
     # =================================================================
     # [레이아웃] 왼쪽: 지도 / 오른쪽: 그래프
     # =================================================================
     col_map, col_chart = st.columns([1, 1])
-
-    # --- 색상 조건 설정 ---
-    # 파란색 그룹: 인구, 수요 (값이 클수록 진하게)
-    if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수']:
-        colorscale = 'Blues'
-    # 빨간색 그룹: 인프라, 밀도, 순위 (값이 클수록 진하게)
-    else:
-        colorscale = 'Reds' 
 
     # ----------------------------------------
     # [왼쪽] 지도
@@ -194,8 +208,7 @@ if valid_metrics:
             center_lon = map_data.geometry.centroid.x.values[0]
             zoom = 11.0
 
-
-        fig = px.choropleth_mapbox(
+        fig_map = px.choropleth_mapbox(
             map_data, 
             geojson=map_data.geometry.__geo_interface__, 
             locations=map_data.index,
@@ -206,11 +219,11 @@ if valid_metrics:
             opacity=0.7,
             hover_name='자치구명', 
             hover_data=[selected_col], 
-            color_continuous_scale=colorscale # 적용된 색상 조건 사용
+            color_continuous_scale=colorscale
         )
         
-        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
+        st.plotly_chart(fig_map, use_container_width=True)
 
     # ----------------------------------------
     # [오른쪽] 막대 그래프
@@ -220,13 +233,11 @@ if valid_metrics:
         
         sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
         
-        # 정렬 및 개수 자르기
         if sort_opt == "상위":
             df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
         else:
             df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
             
-        # 강조 색상
         df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
         
         fig_bar = px.bar(
@@ -256,4 +267,3 @@ if valid_metrics:
     
     csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
-
