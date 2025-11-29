@@ -80,7 +80,7 @@ def load_and_merge_data():
     return gdf
 
 # --------------------------------------------------------------------------
-# 3. 화면 구성 (그래프 & 구별 보기 추가)
+# 3. 화면 구성 (지도 + 그래프 + 표)
 # --------------------------------------------------------------------------
 gdf = load_and_merge_data()
 
@@ -111,7 +111,6 @@ if gdf is not None:
         # -------------------------------------------------------
         st.subheader(f"🗺️ 서울시 {selected_metric_name} 지도")
         
-        # 선택된 자치구 강조 (줌인)
         center_lat, center_lon = 37.5665, 126.9780
         zoom_level = 9.5
         
@@ -138,33 +137,27 @@ if gdf is not None:
         st.plotly_chart(fig_map, use_container_width=True)
 
         # -------------------------------------------------------
-        # (2) 그래프 & 통계 (여기가 새로 추가된 부분!)
+        # (2) 통계 & 그래프
         # -------------------------------------------------------
         st.markdown("---")
         
-        # A. 특정 자치구를 선택했을 때 -> 상세 정보 카드 보여주기
+        # 상세 정보 카드
         if selected_district != '전체 서울시':
-            st.subheader(f"📍 {selected_district} 상세 분석")
-            
+            st.subheader(f"📍 {selected_district} 분석 결과")
             target_row = gdf[gdf['자치구명'] == selected_district].iloc[0]
             val = target_row[selected_col]
             avg = gdf[selected_col].mean()
-            
             col1, col2, col3 = st.columns(3)
             col1.metric("선택한 지표 값", f"{val:,.1f}")
             col2.metric("서울시 평균", f"{avg:,.1f}")
-            col3.metric("평균 대비 차이", f"{val - avg:,.1f}", delta_color="normal")
-            
-            st.info(f"💡 {selected_district}의 {selected_metric_name}은(는) 서울시 평균보다 **{'높습니다' if val > avg else '낮습니다'}**.")
+            col3.metric("평균 대비 차이", f"{val - avg:,.1f}")
 
-        # B. 전체 비교 그래프 (막대 차트)
-        st.subheader(f"📊 {selected_metric_name} 순위 비교 그래프")
-        
+        # 막대 차트
+        st.subheader(f"📊 {selected_metric_name} 순위 비교")
         col_chart1, col_chart2 = st.columns([3, 1])
         with col_chart2:
-            sort_order = st.radio("정렬:", ["상위 10개", "하위 10개", "전체 보기"])
+            sort_order = st.radio("정렬 기준:", ["상위 10개", "하위 10개", "전체 보기"])
         
-        # 정렬 로직
         df_sorted = gdf[['자치구명', selected_col]].sort_values(by=selected_col, ascending=False)
         
         if sort_order == "상위 10개":
@@ -174,23 +167,50 @@ if gdf is not None:
         else:
             chart_data = df_sorted
 
-        # 막대 그래프 그리기 (선택된 자치구는 빨간색으로 강조!)
         chart_data['색상'] = chart_data['자치구명'].apply(lambda x: 'red' if x == selected_district else 'blue')
         
         fig_bar = px.bar(
             chart_data,
             x='자치구명',
             y=selected_col,
-            color='색상', # 내가 선택한 구만 다르게 표시
+            color='색상',
             color_discrete_map={'red': '#FF4B4B', 'blue': '#8884d8'},
-            title=f"{selected_metric_name} 자치구별 비교"
+            title=f"{selected_metric_name} 순위"
         )
-        # 범례 숨기기 (깔끔하게)
         fig_bar.update_layout(showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
 
+        # -------------------------------------------------------
+        # (3) [NEW] 상세 데이터 표 (여기가 추가됨!)
+        # -------------------------------------------------------
+        st.markdown("---")
+        st.subheader("📋 전체 자치구 상세 데이터 표")
+        
+        # 표에 보여줄 컬럼 정리 (이름 + 모든 지표)
+        cols_to_show = ['자치구명'] + list(available_metrics.values())
+        df_table = gdf[cols_to_show].copy()
+        
+        # 선택한 지표 기준으로 내림차순 정렬
+        df_table = df_table.sort_values(by=selected_col, ascending=False)
+        
+        # 대화형 표 보여주기
+        st.dataframe(
+            df_table, 
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # 엑셀 다운로드 버튼
+        csv = df_table.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 표 데이터 다운로드 (CSV)",
+            data=csv,
+            file_name=f"seoul_{selected_metric_name}_data.csv",
+            mime='text/csv'
+        )
+
     else:
-        st.warning("데이터 파일(csv/xlsx)이 아직 업로드되지 않아 지도만 표시됩니다.")
-        st.info("data 폴더에 분석 데이터를 올려주세요.")
+        st.warning("데이터 파일이 없어 지도만 표시됩니다.")
+        st.info("data 폴더에 파일을 업로드해주세요.")
 else:
-    st.error("지도를 로드하는 데 실패했습니다.")
+    st.error("지도를 로드할 수 없습니다.")
