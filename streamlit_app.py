@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import os
 
 # --------------------------------------------------------------------------
-# 1. 페이지 기본 설정
+# 1. 페이지 기본 설정 (레이아웃 wide)
 # --------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보드")
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
@@ -66,23 +66,23 @@ def load_and_merge_data():
     except: 
         gdf['버스정류장 밀도'] = 0
 
-    # 4. [수정됨] 지하철 밀도 (파일명 정확히 지정 + 안전장치)
-    density_file = '지하철 밀도.xlsx'
-    density_path = f'./data/{density_file}'
+    # 4. [수정됨] 지하철 밀도 (새 파일명 적용)
+    # 파일명: 지하철 밀도.CSV
+    density_file = './data/지하철 밀도.CSV'
     
-    if os.path.exists(density_path):
+    if os.path.exists(density_file):
         try:
-            try: df_dens = pd.read_csv(density_path, encoding='utf-8')
-            except: df_dens = pd.read_csv(density_path, encoding='cp949')
+            try: df_dens = pd.read_csv(density_file, encoding='utf-8')
+            except: df_dens = pd.read_csv(density_file, encoding='cp949')
             
-            # 컬럼 매핑
+            # 컬럼 매핑 ('자치구_코드_명', '지하철역_밀도(개/km²)')
             gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
             dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
             
             if gu_col and dens_col:
                 df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
                 
-                # 병합
+                # 역 개수도 가져오기
                 cols_to_merge = ['자치구명', '지하철역 밀도']
                 cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
                 if cnt_col:
@@ -91,27 +91,26 @@ def load_and_merge_data():
 
                 gdf = gdf.merge(df_dens[cols_to_merge], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
+                st.sidebar.success("✅ 지하철 밀도 로드 성공!")
             else:
                 gdf['지하철역 밀도'] = 0
-                st.toast("⚠️ 지하철 파일 컬럼 인식 실패", icon="⚠️")
+                st.sidebar.error("❌ 지하철 밀도 컬럼 인식 실패")
         except: 
             gdf['지하철역 밀도'] = 0
     else:
-        # 파일이 없어도 0으로 채우고 넘어감 (에러 방지)
         gdf['지하철역 밀도'] = 0
 
-    # 5. 지하철 위치 좌표
-    coord_file = '지하철 위경도.xlsx - 시트1.csv'
-    coord_path = f'./data/{coord_file}'
+    # 5. [수정됨] 지하철 위치 좌표 (새 파일명 적용)
+    # 파일명: 지하철 위경도.CSV
+    coord_file = './data/지하철 위경도.CSV'
     df_stations = pd.DataFrame()
-    if os.path.exists(coord_path):
+    if os.path.exists(coord_file):
         try:
-            try: df_stations = pd.read_csv(coord_path, encoding='utf-8')
-            except: df_stations = pd.read_csv(coord_path, encoding='cp949')
+            try: df_stations = pd.read_csv(coord_file, encoding='utf-8')
+            except: df_stations = pd.read_csv(coord_file, encoding='cp949')
             
-            if 'point_x' in df_stations.columns:
-                pass
-            else:
+            # point_x, point_y 확인
+            if 'point_x' not in df_stations.columns:
                 df_stations = pd.DataFrame()
         except: pass
 
@@ -260,4 +259,3 @@ if valid_metrics:
 
 else:
     st.warning("분석할 데이터 파일이 없습니다. data 폴더를 확인해주세요.")
-
