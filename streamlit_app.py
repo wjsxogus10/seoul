@@ -35,16 +35,15 @@ def load_and_merge_data():
 
     # (B) 사용자 데이터 병합
     
-    # 컬럼 초기화
+    # 기본 컬럼 초기화
     cols_init = ['총_상주인구_수', '인구 밀도', '집객시설 수', '버스정류장_수', '버스정류장 밀도', '지하철역_수', '지하철역 밀도']
     for c in cols_init:
         gdf[c] = 0
-    
-    # 1. 상주 인구
+
+    # 1. 상주 인구 & 인구 밀도
     try:
         df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
         grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
-        gdf = gdf.drop(columns=['총_상주인구_수', '인구 밀도'], errors='ignore')
         gdf = gdf.merge(grp, on='자치구명', how='left')
         gdf['총_상주인구_수'] = gdf['총_상주인구_수'].fillna(0)
         gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
@@ -54,7 +53,6 @@ def load_and_merge_data():
     try:
         df_biz = pd.read_csv('./data/서울시 상권분석서비스(집객시설-자치구).csv', encoding='cp949')
         grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
-        gdf = gdf.drop(columns=['집객시설 수'], errors='ignore')
         gdf = gdf.merge(grp, on='자치구명', how='left')
         gdf['집객시설 수'] = gdf['집객시설 수'].fillna(0)
     except: pass
@@ -68,7 +66,6 @@ def load_and_merge_data():
         joined = geopandas.sjoin(gdf_bus, gdf, how="inner", predicate="within")
         cnt = joined.groupby('자치구명').size().reset_index(name='버스정류장_수')
         
-        gdf = gdf.drop(columns=['버스정류장_수', '버스정류장 밀도'], errors='ignore')
         gdf = gdf.merge(cnt, on='자치구명', how='left')
         gdf['버스정류장_수'] = gdf['버스정류장_수'].fillna(0)
         gdf['버스정류장 밀도'] = gdf['버스정류장_수'] / gdf['면적(km²)']
@@ -84,15 +81,14 @@ def load_and_merge_data():
             
             gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
             dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
-            cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
             
             if gu_col and dens_col:
                 rename_map = {gu_col: '자치구명', dens_col: '지하철역 밀도'}
+                cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
                 if cnt_col: rename_map[cnt_col] = '지하철역_수'
                 
                 df_dens = df_dens.rename(columns=rename_map)
                 
-                gdf = gdf.drop(columns=['지하철역_수', '지하철역 밀도'], errors='ignore')
                 gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도', '지하철역_수']], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
                 gdf['지하철역_수'] = gdf['지하철역_수'].fillna(0)
@@ -101,31 +97,28 @@ def load_and_merge_data():
         except: 
             gdf['지하철역 밀도'] = 0
 
-    # 5. 지하철 위치 좌표
+    # 5. 지하철 위치 좌표 (점 찍기용 - 시각화에서는 사용하지 않지만 로직은 유지)
     coord_file = './data/지하철 위경도.CSV'
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
         try:
             df_stations = pd.read_csv(coord_file, encoding='utf-8')
-            if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
         except: pass
 
-    # 6. 대중교통 밀도 & 교통 부족 순위
+    # 6. 대중교통 밀도 & 교통 부족 순위 계산
     if '버스정류장 밀도' not in gdf.columns: gdf['버스정류장 밀도'] = 0
     if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
     if '총_상주인구_수' not in gdf.columns: gdf['총_상주인구_수'] = 0
     
-    # 총 교통수단 수
+    # (6-1) 대중교통 밀도 = (버스수 + 지하철수) / 면적
     gdf['총_교통수단_수'] = gdf['버스정류장_수'] + gdf['지하철역_수']
-
-    # 면적당 밀도
     gdf['대중교통 밀도'] = gdf['총_교통수단_수'] / gdf['면적(km²)']
     
-    # 인구 대비 교통수단 비율
+    # (6-2) 인구 대비 비율
     population_safe = gdf['총_상주인구_수'].replace(0, 1)
     gdf['인구 대비 교통수단 비율'] = gdf['총_교통수단_수'] / population_safe
     
-    # 교통 부족 순위 (인구 대비 비율의 오름차순 랭킹: 비율이 낮을수록 1등)
+    # (6-3) 교통 부족 순위 (인구 대비 비율의 오름차순 랭킹: 비율이 낮을수록 1등)
     gdf['교통 부족 순위'] = gdf['인구 대비 교통수단 비율'].rank(ascending=True, method='min')
 
     return gdf, df_stations
@@ -179,12 +172,12 @@ if valid_metrics:
     col_map, col_chart = st.columns([1, 1])
 
     # --- 색상 조건 설정 ---
-    if selected_col == '총_상주인구_수':
-        colorscale = 'Blues' # 요청: 인구 수는 파랗게
-    elif '순위' in selected_name:
-        colorscale = 'Reds' # 요청: 순위가 높을수록 (25위에 가까울수록) 진하게
+    # 파란색 그룹: 인구, 수요 (값이 클수록 진하게)
+    if selected_col in ['총_상주인구_수', '인구 밀도', '집객시설 수']:
+        colorscale = 'Blues'
+    # 빨간색 그룹: 인프라, 밀도, 순위 (값이 클수록 진하게)
     else:
-        colorscale = 'YlGnBu' # 밀도는 노란색->파란색 계열
+        colorscale = 'Reds' 
 
     # ----------------------------------------
     # [왼쪽] 지도
@@ -201,7 +194,8 @@ if valid_metrics:
             center_lon = map_data.geometry.centroid.x.values[0]
             zoom = 11.0
 
-        fig_map = px.choropleth_mapbox(
+
+        fig = px.choropleth_mapbox(
             map_data, 
             geojson=map_data.geometry.__geo_interface__, 
             locations=map_data.index,
@@ -209,14 +203,14 @@ if valid_metrics:
             mapbox_style="carto-positron", 
             zoom=zoom,
             center={"lat": center_lat, "lon": center_lon}, 
-            opacity=0.7, # 불투명도 약간 높임
+            opacity=0.7,
             hover_name='자치구명', 
             hover_data=[selected_col], 
-            color_continuous_scale=colorscale
+            color_continuous_scale=colorscale # 적용된 색상 조건 사용
         )
         
-        fig_map.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
-        st.plotly_chart(fig_map, use_container_width=True)
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=500)
+        st.plotly_chart(fig, use_container_width=True)
 
     # ----------------------------------------
     # [오른쪽] 막대 그래프
@@ -226,12 +220,13 @@ if valid_metrics:
         
         sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
         
-        # 순위/밀도가 높을수록 (큰 값) 상위 정렬
-        df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
-        if sort_opt == "하위":
-             df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
-        
-        # 선택된 자치구 강조 (빨간색)
+        # 정렬 및 개수 자르기
+        if sort_opt == "상위":
+            df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
+        else:
+            df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
+            
+        # 강조 색상
         df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
         
         fig_bar = px.bar(
@@ -256,7 +251,6 @@ if valid_metrics:
     st.subheader("📋 상세 데이터 표")
     cols_to_show = ['자치구명'] + list(valid_metrics.values())
     
-    # 표도 정렬 옵션에 맞춰서 보여줌
     df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
     st.dataframe(df_table, use_container_width=True, hide_index=True)
     
