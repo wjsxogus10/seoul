@@ -4,46 +4,38 @@ import geopandas
 import plotly.express as px
 import plotly.graph_objects as go
 import os
-from shapely.geometry import Point
 
 # --------------------------------------------------------------------------
-# 1. 페이지 기본 설정
+# 1. 기본 설정
 # --------------------------------------------------------------------------
 st.set_page_config(layout="wide", page_title="서울시 도시계획 대시보드")
 st.title("🏙️ 서울시 도시계획 및 대중교통 개선 대시보드")
 
 # --------------------------------------------------------------------------
-# 2. 데이터 로드 및 통합 함수
+# 2. 데이터 로드 및 병합
 # --------------------------------------------------------------------------
 @st.cache_data
 def load_and_merge_data():
-    # (A) 지도 데이터 (인터넷 공공 데이터 다운로드)
+    # (A) 지도 데이터 (인터넷 공공 데이터)
     map_url = "https://raw.githubusercontent.com/southkorea/seoul-maps/master/kostat/2013/json/seoul_municipalities_geo_simple.json"
     try:
         gdf = geopandas.read_file(map_url)
-        gdf = gdf.to_crs(epsg=4326) # 지도 표시용 좌표계
+        gdf = gdf.to_crs(epsg=4326)
+        col_map = {'name': '자치구명', 'SIG_KOR_NM': '자치구명'}
+        gdf = gdf.rename(columns=col_map)
         
-        # 컬럼 이름 통일
-        if 'name' in gdf.columns:
-            gdf = gdf.rename(columns={'name': '자치구명'})
-        elif 'SIG_KOR_NM' in gdf.columns:
-            gdf = gdf.rename(columns={'SIG_KOR_NM': '자치구명'})
-            
-        # 면적 계산 (도형 기반)
         gdf_area = gdf.to_crs(epsg=5179)
         gdf['면적(km²)'] = gdf_area.geometry.area / 1_000_000
     except Exception as e:
         st.error(f"지도 로드 실패: {e}")
         return None, None
 
-    # (B) 데이터 병합 시작
-    # -----------------------------------------------------------
+    # (B) 사용자 데이터 병합
     
     # 1. 상주 인구
     try:
         df_pop = pd.read_csv('./data/서울시 상권분석서비스(상주인구-자치구).csv', encoding='cp949')
-        grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index()
-        grp = grp.rename(columns={'자치구_코드_명': '자치구명'})
+        grp = df_pop.groupby('자치구_코드_명')['총_상주인구_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
         gdf = gdf.merge(grp, on='자치구명', how='left')
         gdf['인구 밀도'] = gdf['총_상주인구_수'] / gdf['면적(km²)']
     except: pass
@@ -51,13 +43,13 @@ def load_and_merge_data():
     # 2. 집객시설 수
     try:
         df_biz = pd.read_csv('./data/서울시 상권분석서비스(집객시설-자치구).csv', encoding='cp949')
-        grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index()
-        grp = grp.rename(columns={'자치구_코드_명': '자치구명'})
+        grp = df_biz.groupby('자치구_코드_명')['집객시설_수'].mean().reset_index().rename(columns={'자치구_코드_명':'자치구명'})
         gdf = gdf.merge(grp, on='자치구명', how='left')
     except: pass
 
-    # 3. 버스정류장 밀도 (좌표 계산)
+    # 3. 버스정류장 밀도
     try:
+        from shapely.geometry import Point
         df_bus = pd.read_excel('./data/GGD_StationInfo_M.xlsx').dropna(subset=['X', 'Y'])
         geom = [Point(xy) for xy in zip(df_bus['X'], df_bus['Y'])]
         gdf_bus = geopandas.GeoDataFrame(df_bus, geometry=geom, crs="EPSG:4326")
@@ -69,20 +61,28 @@ def load_and_merge_data():
     except: 
         gdf['버스정류장 밀도'] = 0
 
-    # 4. 지하철 밀도 (업로드한 밀도 파일 사용)
+    # 4. 지하철 밀도
     density_file = './data/지하철 밀도.xlsx - Sheet1.csv'
     if os.path.exists(density_file):
         try:
             try: df_dens = pd.read_csv(density_file, encoding='utf-8')
             except: df_dens = pd.read_csv(density_file, encoding='cp949')
             
-            # 컬럼 매핑 ('자치구_코드_명', '지하철역_밀도(개/km²)')
+            # 컬럼 매핑
             gu_col = next((c for c in df_dens.columns if '자치구' in c), None)
             dens_col = next((c for c in df_dens.columns if '밀도' in c), None)
             
             if gu_col and dens_col:
                 df_dens = df_dens.rename(columns={gu_col: '자치구명', dens_col: '지하철역 밀도'})
-                gdf = gdf.merge(df_dens[['자치구명', '지하철역 밀도']], on='자치구명', how='left')
+                # 병합
+                cols_to_merge = ['자치구명', '지하철역 밀도']
+                # 역 개수 컬럼도 있으면 가져오기
+                cnt_col = next((c for c in df_dens.columns if '역' in c and '수' in c), None)
+                if cnt_col:
+                    df_dens = df_dens.rename(columns={cnt_col: '지하철역_수'})
+                    cols_to_merge.append('지하철역_수')
+
+                gdf = gdf.merge(df_dens[cols_to_merge], on='자치구명', how='left')
                 gdf['지하철역 밀도'] = gdf['지하철역 밀도'].fillna(0)
             else:
                 gdf['지하철역 밀도'] = 0
@@ -97,15 +97,19 @@ def load_and_merge_data():
         try:
             try: df_stations = pd.read_csv(coord_file, encoding='utf-8')
             except: df_stations = pd.read_csv(coord_file, encoding='cp949')
-            # point_x, point_y가 있어야 함
-            if 'point_x' not in df_stations.columns:
-                df_stations = pd.DataFrame()
+            if 'point_x' not in df_stations.columns: df_stations = pd.DataFrame()
         except: pass
 
-    # 6. 교통 부족 순위 (버스 + 지하철 합계가 낮을수록 1등)
-    if '버스정류장 밀도' in gdf.columns and '지하철역 밀도' in gdf.columns:
-        total = gdf['버스정류장 밀도'] + gdf['지하철역 밀도']
-        gdf['교통 부족 순위'] = total.rank(ascending=True, method='min')
+    # 6. [NEW] 대중교통 밀도 & 교통 부족 순위 계산
+    # 컬럼이 없으면 0으로 채움
+    if '버스정류장 밀도' not in gdf.columns: gdf['버스정류장 밀도'] = 0
+    if '지하철역 밀도' not in gdf.columns: gdf['지하철역 밀도'] = 0
+    
+    # 대중교통 밀도 = 버스 밀도 + 지하철 밀도
+    gdf['대중교통 밀도'] = gdf['버스정류장 밀도'].fillna(0) + gdf['지하철역 밀도'].fillna(0)
+    
+    # 부족 순위 (밀도가 낮을수록 1등)
+    gdf['교통 부족 순위'] = gdf['대중교통 밀도'].rank(ascending=True, method='min')
 
     return gdf, df_stations
 
@@ -122,11 +126,12 @@ gdf, df_stations = result
 
 st.sidebar.header("🔍 분석 옵션")
 
-# [요청하신 순서 적용]
+# [요청하신 순서 + 대중교통 밀도 추가]
 metrics_order = [
     ('상주 인구', '총_상주인구_수'),
     ('인구 밀도', '인구 밀도'),
     ('집객시설 수', '집객시설_수'),
+    ('대중교통 밀도 (버스+지하철)', '대중교통 밀도'), # [NEW]
     ('버스정류장 밀도', '버스정류장 밀도'),
     ('지하철역 밀도', '지하철역 밀도'),
     ('교통 부족 순위', '교통 부족 순위')
@@ -136,7 +141,8 @@ metrics_order = [
 valid_metrics = {}
 for k, v in metrics_order:
     if v in gdf.columns:
-        if gdf[v].sum() > 0 or k == '교통 부족 순위':
+        # 데이터가 있거나(sum > 0), 부족 순위인 경우
+        if gdf[v].sum() > 0 or '순위' in k:
             valid_metrics[k] = v
 
 if valid_metrics:
@@ -161,8 +167,7 @@ if valid_metrics:
         center_lat, center_lon = d.geometry.centroid.y.values[0], d.geometry.centroid.x.values[0]
         zoom = 11.5
 
-    # 교통 부족 순위는 1위(낮은 값)가 빨간색이어야 함 -> Reds_r (역순)
-    # 나머지는 값이 높을수록 진한 색 -> YlGnBu
+    # 색상 설정 (부족 순위만 빨간색, 나머지는 파란색/초록색)
     colorscale = 'Reds_r' if '부족' in selected_name else 'YlGnBu'
 
     fig = px.choropleth_mapbox(
@@ -172,8 +177,8 @@ if valid_metrics:
         hover_name='자치구명', hover_data=[selected_col], color_continuous_scale=colorscale
     )
     
-    # [특수 기능] '지하철역 밀도' 선택 시 실제 역사 위치(점) 표시
-    if '지하철' in selected_name and not df_stations.empty:
+    # [특수 기능] 지하철이나 대중교통을 볼 때, 실제 역사 위치(점) 표시
+    if ('지하철' in selected_name or '대중교통' in selected_name) and not df_stations.empty:
         fig.add_trace(go.Scattermapbox(
             lat=df_stations['point_y'], lon=df_stations['point_x'],
             mode='markers', marker=go.scattermapbox.Marker(size=5, color='red'),
