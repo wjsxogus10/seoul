@@ -222,4 +222,43 @@ if valid_metrics:
     # [오른쪽] 막대 그래프
     # ----------------------------------------
     with col_chart:
-        st.subheader(f"
+        st.subheader(f"📊 {selected_name} 순위 비교")
+        
+        sort_opt = st.radio("정렬 기준:", ["상위", "하위"], horizontal=True, key="sort_chart")
+        
+        # 순위/밀도가 높을수록 (큰 값) 상위 정렬
+        df_sorted = gdf.sort_values(by=selected_col, ascending=False).head(display_count)
+        if sort_opt == "하위":
+             df_sorted = gdf.sort_values(by=selected_col, ascending=True).head(display_count)
+        
+        # 선택된 자치구 강조 (빨간색)
+        df_sorted['color'] = df_sorted['자치구명'].apply(lambda x: '#FF4B4B' if x == selected_district else '#8884d8')
+        
+        fig_bar = px.bar(
+            df_sorted, x='자치구명', y=selected_col, 
+            text=selected_col, color='color', color_discrete_map='identity'
+        )
+        
+        fmt = '%{text:.0f}' if '순위' in selected_name or '인구' in selected_name else '%{text:.4f}'
+        fig_bar.update_traces(texttemplate=fmt, textposition='outside')
+        fig_bar.update_layout(
+            showlegend=False, 
+            xaxis_title=None, 
+            height=500,
+            margin={"r":0,"t":20,"l":0,"b":0}
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ----------------------------------------
+    # [하단] 상세 데이터 표
+    # ----------------------------------------
+    st.markdown("---")
+    st.subheader("📋 상세 데이터 표")
+    cols_to_show = ['자치구명'] + list(valid_metrics.values())
+    
+    # 표도 정렬 옵션에 맞춰서 보여줌
+    df_table = gdf[cols_to_show].sort_values(by=selected_col, ascending=(sort_opt=="하위")).head(display_count)
+    st.dataframe(df_table, use_container_width=True, hide_index=True)
+    
+    csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
