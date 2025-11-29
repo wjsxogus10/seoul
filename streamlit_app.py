@@ -102,7 +102,7 @@ def load_and_merge_data():
     df_stations = pd.DataFrame()
     if os.path.exists(coord_file):
         try:
-            df_stations = pd.read_csv(coord_file, encoding='utf-8')
+            df_stations = pd.read_csv(coord_file, encoding='euc-kr')
         except: pass
 
     # 6. 대중교통 밀도 & 교통 부족 순위 계산
@@ -256,3 +256,4 @@ if valid_metrics:
     
     csv = gdf[cols_to_show].to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 전체 데이터 다운로드 (CSV)", csv, "seoul_analysis.csv", "text/csv")
+
